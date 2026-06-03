@@ -957,6 +957,8 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
         "Return only valid JSON: {\"visual_prompt\":\"...\"}. "
         "The visual_prompt must follow the workflow prompt style exactly. "
         "Preserve fixed character identity traits and requested expression. "
+        "For character sprites, Clothing is a mandatory fixed visual trait: translate it and keep its concrete garments, colors, materials, accessories, and silhouette. "
+        "Never replace the supplied Clothing with clothing from the example prompt or with a generic outfit. "
         "Do not add extra characters, copyrighted artist names, watermarks, UI text, or camera metadata. "
         "The visual_prompt must be entirely in English. Translate any Portuguese source fields into English."
     )
@@ -1010,6 +1012,7 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
 
 def build_sprite_visual_prompt(character, expression=None, user_prompt=""):
     character = character or {}
+    clothing = clean(character.get("clothing"))
     source = " ".join(
         clean(part)
         for part in [
@@ -1031,6 +1034,8 @@ def build_sprite_visual_prompt(character, expression=None, user_prompt=""):
     tags.extend(body_prompt_tags(lower))
     tags.extend(outfit_prompt_tags(lower))
     tags.extend(expression_prompt_tags(expression or lower))
+    if clothing:
+        tags.append(f"outfit: {clothing}")
 
     tags.extend(["clean lineart", "detailed face", "detailed eyes", "clean silhouette", "simple light gray background"])
     return dedupe_tags(tags)
@@ -1043,13 +1048,13 @@ def build_sprite_source_prompt(character, expression=None, user_prompt=""):
         ("Species", character.get("species")),
         ("Gender", character.get("gender")),
         ("Physical appearance", character.get("physical")),
-        ("Clothing", character.get("clothing")),
+        ("Clothing - mandatory fixed outfit, preserve exactly and translate to English", character.get("clothing")),
     ]:
         value = clean(value)
         if value:
             parts.append(f"{label}: {value}")
     parts.append(
-        "Create the final image prompt in English only. Sprite requirements: one character only, full body, standing, front view, visual novel sprite, simple light background."
+        "Create the final image prompt in English only. Sprite requirements: one character only, full body, standing, front view, visual novel sprite, simple light background. Do not invent or replace the outfit."
     )
     return "\n".join(parts)
 

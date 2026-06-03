@@ -454,7 +454,12 @@ class AppHandler(BaseHTTPRequestHandler):
         db.add_api_log(
             "local",
             "character:image-prompt",
-            {"character_id": character_id, "workbench": workbench_id},
+            {
+                "character_id": character_id,
+                "workbench": workbench_id,
+                "clothing": character.get("clothing") or "",
+                "source_prompt": source_prompt,
+            },
             {"visual_prompt": visual_prompt},
             story_id=character.get("story_id"),
         )

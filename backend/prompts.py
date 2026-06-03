@@ -92,19 +92,123 @@ Regras para personagens novos:
 """
 
 
-def build_narrator_user_prompt(story, user_input):
+def build_narrative_context(story, user_input):
     characters = story.get("characters") or []
     scenes = story.get("scenes") or []
-    recent_scenes = scenes[-3:]
     memory = story.get("memory_entries") or []
+    lore_entries = story.get("lore_entries") or []
     current_scene = scenes[-1] if scenes else {}
     current_raw = current_scene.get("raw_ai_response") or {}
     current_location = current_raw.get("location") if isinstance(current_raw, dict) else ""
     current_background = current_scene.get("background_prompt") or ""
     selected_characters = select_relevant_characters(characters, current_scene, user_input, story.get("player_character") or {})
 
+    return {
+        "story_bible": build_story_bible(story, lore_entries),
+        "current_story_memory": build_current_story_memory(story, memory),
+        "active_characters": build_active_characters(story, selected_characters),
+        "recent_scenes": build_recent_scenes(scenes[-4:]),
+        "visual_state": build_visual_state(current_location, current_background),
+        "player_choice": user_input or "Comece ou continue a historia naturalmente.",
+        "task": build_narrative_task(),
+    }
+
+
+def build_narrator_user_prompt(story, user_input, context=None):
+    context = context or build_narrative_context(story, user_input)
+    return f"""STORY BIBLE:
+{context["story_bible"]}
+
+CURRENT STORY MEMORY:
+{context["current_story_memory"]}
+
+ACTIVE CHARACTERS:
+{context["active_characters"]}
+
+RECENT SCENES:
+{context["recent_scenes"]}
+
+VISUAL STATE:
+{context["visual_state"]}
+
+PLAYER CHOICE:
+{context["player_choice"]}
+
+TASK:
+{context["task"]}"""
+
+
+def build_story_bible(story, lore_entries):
+    player = story.get("player_character") or {}
+    lore_lines = []
+    for entry in lore_entries[:6]:
+        title = compact(entry.get("title"), 80) or "Lore"
+        entry_type = compact(entry.get("entry_type"), 40) or "note"
+        content = compact(entry.get("content"), 260)
+        if content:
+            lore_lines.append(f"- [{entry_type}] {title}: {content}")
+
+    return "\n".join(
+        [
+            f"Titulo: {story.get('title')}",
+            f"Genero: {story.get('genre')}",
+            f"Tom: {story.get('tone')}",
+            f"Estilo visual: {story.get('visual_style')}",
+            f"Idioma da historia: {story.get('language') or 'pt-BR'}",
+            "",
+            "Lore principal:",
+            compact(story.get("lore") or "Nao definido.", 1200),
+            "",
+            "Lorebook relevante:",
+            "\n".join(lore_lines) or "Sem entradas adicionais de lore.",
+            "",
+            "Protagonista:",
+            "\n".join(
+                [
+                    f"Nome: {player.get('name') or 'Jogador'}",
+                    f"Papel: {compact(player.get('role'), 100)}",
+                    f"Personalidade: {compact(player.get('personality'), 220)}",
+                    f"Objetivos: {compact(player.get('goals'), 220)}",
+                    f"Historico: {compact(player.get('background'), 220)}",
+                ]
+            ),
+        ]
+    )
+
+
+def build_current_story_memory(story, memory):
+    selected = sorted(
+        memory,
+        key=lambda entry: (int(entry.get("importance") or 0), int(entry.get("created_at") or 0)),
+        reverse=True,
+    )[:10]
+    memory_lines = []
+    for entry in selected:
+        entry_type = compact(entry.get("entry_type"), 40) or "note"
+        importance = entry.get("importance") or 1
+        content = compact(entry.get("content"), 220)
+        if content:
+            memory_lines.append(f"- [{entry_type}, importancia {importance}] {content}")
+
+    return "\n".join(
+        [
+            "Resumo vivo:",
+            compact(story.get("summary") or "A historia esta no inicio.", 950),
+            "",
+            "Memorias persistentes mais importantes:",
+            "\n".join(memory_lines) or "Sem memoria registrada.",
+        ]
+    )
+
+
+def build_active_characters(story, selected_characters):
     character_lines = []
+    seen = set()
     for character in selected_characters:
+        key = str(character.get("name") or "").lower()
+        if key in seen:
+            continue
+        seen.add(key)
         character_lines.append(
             "\n".join(
                 [
@@ -112,6 +216,7 @@ def build_narrator_user_prompt(story, user_input):
                     f"Papel: {compact(character.get('role'), 80)}",
                     f"Tipo: {compact(character.get('character_type'), 60)}",
                     f"Descricao: {compact(character.get('description'), 180)}",
+                    f"Aparencia: {compact(character.get('physical'), 160)}",
                     f"Personalidade: {compact(character.get('personality'), 180)}",
                     f"Relacao: {compact(character.get('relationship'), 140)}",
                     f"Estilo de fala: {compact(character.get('speech_style'), 100)}",
@@ -120,7 +225,10 @@ def build_narrator_user_prompt(story, user_input):
                 ]
             )
         )
+    return "\n\n".join(character_lines) or "Nenhum personagem conhecido."
 
+
+def build_recent_scenes(recent_scenes):
     recent_lines = []
     for scene in recent_scenes:
         dialogues = scene.get("dialogues", [])
@@ -128,52 +236,37 @@ def build_narrator_user_prompt(story, user_input):
         for dialogue in dialogues[-6:]:
             if isinstance(dialogue, dict):
                 compact_dialogues.append(f"{dialogue.get('character', 'Narrador')}: {compact(dialogue.get('text'), 180)}")
+        raw = scene.get("raw_ai_response") or {}
+        location = raw.get("location") if isinstance(raw, dict) else ""
         recent_lines.append(
-            f"Momento {scene.get('scene_order')}: {compact(scene.get('scene_text'), 260)}\n"
+            f"Momento {scene.get('scene_order')} - {compact(scene.get('title'), 80)}\n"
+            f"Local: {compact(location or 'desconhecido', 120)}\n"
+            f"Narracao: {compact(scene.get('scene_text'), 300)}\n"
             f"Dialogos recentes: {' | '.join(compact_dialogues) or 'sem dialogos'}\n"
             f"Escolhas: {scene.get('choices', [])}"
         )
+    return "\n\n".join(recent_lines) or "Nenhuma cena gerada ainda."
 
-    memory_lines = [compact(entry.get("content", ""), 180) for entry in memory[:6]]
-    player = story.get("player_character") or {}
 
-    return f"""Historia:
-Titulo: {story.get('title')}
-Genero: {story.get('genre')}
-Tom: {story.get('tone')}
-Estilo visual: {story.get('visual_style')}
-Idioma da historia: {story.get('language') or 'pt-BR'}
+def build_visual_state(current_location, current_background):
+    return "\n".join(
+        [
+            f"Local atual: {current_location or 'desconhecido'}",
+            f"Background atual: {compact(current_background or 'nenhum background definido', 260)}",
+        ]
+    )
 
-Lore essencial:
-{compact(story.get('lore') or 'Nao definido.', 1100)}
 
-Resumo atual:
-{compact(story.get('summary') or 'A historia esta no inicio.', 900)}
-
-Personagem do jogador:
-Nome: {player.get('name') or 'Jogador'}
-Papel: {compact(player.get('role'), 80)}
-Personalidade: {compact(player.get('personality'), 180)}
-Objetivos: {compact(player.get('goals'), 180)}
-
-Personagens relevantes nesta cena:
-{chr(10).join(character_lines) or 'Nenhum personagem conhecido.'}
-
-Memoria importante:
-{chr(10).join(memory_lines) or 'Sem memoria registrada.'}
-
-Cenas recentes:
-{chr(10).join(recent_lines) or 'Nenhuma cena gerada ainda.'}
-
-Estado visual atual:
-Local atual: {current_location or 'desconhecido'}
-Background atual: {compact(current_background or 'nenhum background definido', 220)}
-
-Acao/escolha do jogador:
-{user_input or 'Comece ou continue a historia naturalmente.'}
-
-Gere o proximo bloco de interacao no JSON obrigatorio, com densidade de visual novel.
-Monitore o cenario atual com cuidado. Se a acao acontecer no mesmo local, preserve location/background e defina location_changed como false. Se houver deslocamento fisico para outro cenario, defina location_changed como true e gere um background_prompt novo, robusto e especifico."""
+def build_narrative_task():
+    return (
+        "Gere o proximo bloco de interacao no JSON obrigatorio, com densidade de visual novel.\n"
+        "Use STORY BIBLE para regras fixas do mundo e tom.\n"
+        "Use CURRENT STORY MEMORY para continuidade de longo prazo e fatos persistentes.\n"
+        "Use ACTIVE CHARACTERS para voz, relacoes, segredos e conflitos dos personagens presentes ou relevantes.\n"
+        "Use RECENT SCENES apenas para continuidade imediata.\n"
+        "Monitore o cenario atual com cuidado: se a acao acontecer no mesmo local, preserve location/background e defina location_changed como false. "
+        "Se houver deslocamento fisico para outro cenario, defina location_changed como true e gere um background_prompt novo, robusto e especifico."
+    )
 
 
 def select_relevant_characters(characters, current_scene, user_input, player):

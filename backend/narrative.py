@@ -4,7 +4,7 @@ import time
 
 from . import db
 from .ollama_client import chat_json
-from .prompts import NARRATOR_SYSTEM_PROMPT, build_narrator_user_prompt
+from .prompts import NARRATOR_SYSTEM_PROMPT, build_narrative_context, build_narrator_user_prompt
 
 
 IMPROVE_SYSTEM_PROMPT = """Voce melhora textos de planejamento para uma visual novel gerada por IA.
@@ -1265,7 +1265,8 @@ def generate_scene(story_id, user_input):
         raise ValueError("Historia nao encontrada.")
 
     settings = db.get_settings()
-    user_prompt = build_narrator_user_prompt(story, user_input)
+    narrative_context = build_narrative_context(story, user_input)
+    user_prompt = build_narrator_user_prompt(story, user_input, narrative_context)
     messages = [
         {"role": "system", "content": NARRATOR_SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
@@ -1274,6 +1275,7 @@ def generate_scene(story_id, user_input):
         "model": settings.get("ollama_model"),
         "system_chars": len(NARRATOR_SYSTEM_PROMPT),
         "user_prompt_chars": len(user_prompt),
+        "context_section_chars": {key: len(str(value or "")) for key, value in narrative_context.items()},
         "user_input": user_input,
         "prompt_preview": user_prompt[:1200],
     }

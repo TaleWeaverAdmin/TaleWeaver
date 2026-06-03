@@ -1,5 +1,7 @@
 # TaleWeaver
 
+An AI driven visual novel generator to run locally.
+
 TaleWeaver is a local/self-hosted AI visual novel studio inspired by endless visual novel systems: create a story, define lore and characters, play scenes, make choices, generate assets, and continue later.
 
 This MVP uses only Python standard library on the backend:

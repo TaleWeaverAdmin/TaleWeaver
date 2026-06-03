@@ -681,7 +681,7 @@ class AppHandler(BaseHTTPRequestHandler):
         elif asset.get("asset_type") == "sprite":
             character_id = asset.get("character_id") or "unknown"
             folder = STORIES_DIR / asset["story_id"] / "characters" / character_id
-            expression = asset.get("expression") or "neutral"
+            expression = sanitize_path_component(asset.get("expression") or "neutral")
             filename = f"{expression}_{asset['id']}{extension}"
         else:
             folder = STORIES_DIR / asset["story_id"] / "metadata"
@@ -983,6 +983,15 @@ def scene_location(scene):
     if isinstance(raw, dict):
         return raw.get("location") or ""
     return ""
+
+
+def sanitize_path_component(value, fallback="asset"):
+    text = str(value or "").strip()
+    text = re.sub(r'[<>:"/\\\\|?*]+', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    text = text.replace(" ", "_")
+    text = re.sub(r"_+", "_", text)
+    return text or fallback
 
 
 def normalize_prompt(prompt):

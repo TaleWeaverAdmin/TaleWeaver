@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sqlite3
 import time
@@ -588,7 +589,8 @@ def duplicate_asset_file(file_path, new_story_id, new_asset_id, asset_type, char
     if asset_type == "background":
         target = STORIES_DIR / new_story_id / "backgrounds" / f"{new_asset_id}{extension}"
     elif asset_type == "sprite":
-        target = STORIES_DIR / new_story_id / "characters" / (character_id or "unknown") / f"{expression or 'neutral'}_{new_asset_id}{extension}"
+        safe_expression = sanitize_path_component(expression or "neutral")
+        target = STORIES_DIR / new_story_id / "characters" / (character_id or "unknown") / f"{safe_expression}_{new_asset_id}{extension}"
     else:
         target = STORIES_DIR / new_story_id / "metadata" / f"{new_asset_id}{extension}"
 
@@ -598,6 +600,15 @@ def duplicate_asset_file(file_path, new_story_id, new_asset_id, asset_type, char
     except OSError:
         return ""
     return target.relative_to(ROOT_DIR).as_posix()
+
+
+def sanitize_path_component(value, fallback="asset"):
+    text = str(value or "").strip()
+    text = re.sub(r'[<>:"/\\\\|?*]+', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    text = text.replace(" ", "_")
+    text = re.sub(r"_+", "_", text)
+    return text or fallback
 
 
 def get_story(story_id):

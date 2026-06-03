@@ -43,7 +43,7 @@ function defaultCreateDraft(language = "pt-BR") {
     tone: "",
     visual_style: "anime visual novel",
     visual_style_id: "",
-    content_rating: "Teen",
+    content_rating: "",
     language,
     lore: "",
     starting_location: "",
@@ -735,7 +735,7 @@ function renderCreateStoryDetails(draft) {
         ${draftField("title", "Nome da história", "text", "Crônicas de Elaria", draft.title)}
         ${draftField("genre", "Gênero", "text", "fantasia, mistério", draft.genre)}
         ${draftField("tone", "Tom", "text", "dramático, melancólico", draft.tone)}
-        ${draftField("content_rating", "Classificação", "text", "Teen", draft.content_rating)}
+        ${draftField("content_rating", "Classificação", "text", "definida pelo usuário", draft.content_rating)}
         ${draftField("language", "Idioma", "text", "pt-BR", draft.language)}
         ${draftField("starting_location", "Local inicial", "text", "biblioteca sob chuva", draft.starting_location)}
         ${draftTextarea("lore", "Lore e mundo", "lore", "Regras do mundo, conflitos, facções, cidades, magia, tecnologia...", draft.lore, true)}

@@ -25,8 +25,8 @@ DEFAULT_SETTINGS = {
             "style": (
                 "Write a detailed natural-language English prompt for a visual novel character sprite. "
                 "Do not use short booru tag lists as the main style. Describe anatomy, face, skin, hair, "
-                "outfit, posture, expression, silhouette, and visual-novel sprite framing. Keep it safe, "
-                "non-explicit, one character only, full body, standing, front view, simple light background."
+                "outfit, posture, expression, silhouette, and visual-novel sprite framing. "
+                "One character only, full body, standing, front view, simple light background."
             ),
             "example": (
                 "A tall, powerfully built man with light brown skin and a strong, athletic physique. "

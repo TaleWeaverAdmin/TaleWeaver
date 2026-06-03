@@ -402,11 +402,6 @@ def build_negative_prompt(asset_type, checkpoint, prompt=""):
     elif asset_type == "sprite":
         common.extend(["multiple people", "crowd", "scenery focus", "busy background", "detailed background", "shadow on wall"])
         common.extend(["2boys", "2girls", "two people", "twins", "duplicate person", "split screen", "panel layout", "comic panel", "frame", "border"])
-        gender = infer_gender_tags(prompt)
-        if "male" in gender:
-            common.extend(["1girl", "woman", "female", "breasts", "dress", "skirt"])
-        elif "female" in gender:
-            common.extend(["1boy", "man", "male", "beard", "mustache"])
     return ", ".join(common)
 
 

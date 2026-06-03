@@ -1192,5 +1192,5 @@ def build_sprite_source_prompt(prompt, character, expression):
         parts.append(f"User visual prompt: {prompt}")
     if expression:
         parts.append(f"Expression: {expression}")
-    parts.append("Outfit: dignified fantasy visual novel clothing appropriate to the character role, not underwear, not a plain dress unless explicitly requested")
+    parts.append("Outfit: visual novel clothing or costume appropriate to the character role and user visual prompt")
     return "\n".join(part for part in parts if part and not part.endswith(": None"))

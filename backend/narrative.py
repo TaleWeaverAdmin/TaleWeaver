@@ -21,7 +21,6 @@ Regras:
 - Nao contradiga o texto original.
 - Expanda com detalhes uteis para narrativa, continuidade e geracao de imagens.
 - Escreva em portugues brasileiro, exceto se o campo for prompt visual; nesse caso escreva em ingles.
-- Nao adicione conteudo sexual explicito.
 - Para mundo/lore, detalhe regras, conflitos, cultura, locais, historia e possibilidades dramaticas.
 - Para personagem, detalhe aparencia, personalidade, voz, objetivos, medos, contradicoes e ganchos narrativos.
 - Para prompt visual, produza tags/descritivo em ingles, claro e reutilizavel.
@@ -38,7 +37,7 @@ Formato obrigatorio:
   "genre": "generos separados por virgula",
   "tone": "tom narrativo",
   "visual_style": "estilo visual generico",
-  "content_rating": "Teen | Mature",
+  "content_rating": "classificacao de conteudo definida pelo usuario",
   "language": "pt-BR | en-US",
   "lore": "descricao do mundo, conflito inicial e regras importantes",
   "starting_location": "local inicial curto",
@@ -81,7 +80,6 @@ Regras:
 - Escreva campos narrativos no idioma solicitado pelo usuario.
 - Prompt visual deve ficar em ingles.
 - Preserve a intencao do usuario.
-- Nao inclua conteudo sexual explicito.
 - Use personagens e conflitos fortes o bastante para sustentar uma historia longa.
 """
 
@@ -149,7 +147,7 @@ def normalize_story_seed(raw, prompt):
         "genre": clean(raw.get("genre")) or "drama, misterio",
         "tone": clean(raw.get("tone")) or "dramatico, imersivo",
         "visual_style": clean(raw.get("visual_style")) or "anime visual novel",
-        "content_rating": clean(raw.get("content_rating")) or "Teen",
+        "content_rating": clean(raw.get("content_rating")),
         "language": language,
         "lore": clean(raw.get("lore")) or prompt,
         "starting_location": clean(raw.get("starting_location")),
@@ -200,7 +198,7 @@ def fallback_story_seed(prompt):
         "genre": "drama interativo, misterio",
         "tone": "cinematico, tenso, emocional",
         "visual_style": "anime visual novel",
-        "content_rating": "Teen",
+        "content_rating": "",
         "language": language,
         "lore": (
             f"Ideia central: {prompt or 'uma historia interativa local'}.\n\n"
@@ -911,7 +909,7 @@ def improve_visual_prompt(text, context=None):
                 "Always include gender/age/body/face/hair/outfit/expression/pose when known. "
                 "Use tags like: 1boy, 1girl, old man, mature male, bald, narrow eyes, full body, standing, visual novel sprite. "
                 "For environments, write concise English visual tags and composition. "
-                "Preserve fixed traits, avoid copyrighted artist names, avoid explicit sexual content."
+                "Preserve fixed traits and avoid copyrighted artist names."
             ),
         },
         {
@@ -959,7 +957,7 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
         "Return only valid JSON: {\"visual_prompt\":\"...\"}. "
         "The visual_prompt must follow the workflow prompt style exactly. "
         "Preserve fixed character identity traits and requested expression. "
-        "Do not add extra characters, explicit sexual content, copyrighted artist names, watermarks, UI text, or camera metadata. "
+        "Do not add extra characters, copyrighted artist names, watermarks, UI text, or camera metadata. "
         "The visual_prompt must be entirely in English. Translate any Portuguese source fields into English."
     )
     user = (

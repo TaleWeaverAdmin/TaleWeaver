@@ -1990,6 +1990,7 @@ async function saveVisualStyle(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const payload = collectStyleDraft(form);
+  const coverFile = document.getElementById("style_cover_file")?.files?.[0] || null;
   if (!payload.name.trim()) {
     alert("Informe o nome do estilo.");
     return;
@@ -1999,11 +2000,10 @@ async function saveVisualStyle(event) {
     const saved = state.styleEditingId
       ? await api(`/api/visual-styles/${state.styleEditingId}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/visual-styles", { method: "POST", body: JSON.stringify(payload) });
-    const file = document.getElementById("style_cover_file")?.files?.[0];
     let finalStyle = saved;
-    if (file) {
+    if (coverFile) {
       const upload = new FormData();
-      upload.append("image", file);
+      upload.append("image", coverFile);
       finalStyle = await uploadStyleCover(saved.id, upload);
     }
     await loadVisualStyles();

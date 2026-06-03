@@ -1241,7 +1241,7 @@ def serialize_visual_style(row):
     if not data:
         return None
     data["advanced_settings"] = json_load(data.get("advanced_settings"), {})
-    data["cover_url"] = f"/api/visual-styles/{data['id']}/cover" if data.get("cover_path") else ""
+    data["cover_url"] = f"/api/visual-styles/{data['id']}/cover?v={data.get('updated_at') or 0}" if data.get("cover_path") else ""
     return data
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 STORIES_DIR = DATA_DIR / "stories"
+STYLE_COVERS_DIR = DATA_DIR / "style_covers"
 DB_PATH = DATA_DIR / "app.sqlite"
 
 DEFAULT_SETTINGS = {
@@ -65,3 +66,31 @@ DEFAULT_SETTINGS = {
     "sprite_sampler": "euler_ancestral",
     "sprite_scheduler": "normal",
 }
+
+DEFAULT_VISUAL_STYLES = [
+    {
+        "name": "Anime VN",
+        "prompt_prefix": "anime visual novel character sprite,",
+        "prompt_suffix": "full body, standing front view, clean silhouette, simple light gray background",
+    },
+    {
+        "name": "Fantasia painterly",
+        "prompt_prefix": "painterly fantasy visual novel character sprite,",
+        "prompt_suffix": "soft dramatic lighting, detailed fabric, full body, standing front view",
+    },
+    {
+        "name": "Anime retro",
+        "prompt_prefix": "retro anime visual novel character sprite,",
+        "prompt_suffix": "clean cel shading, 1990s anime feeling, full body, standing front view",
+    },
+    {
+        "name": "Cinematico realista",
+        "prompt_prefix": "cinematic realistic visual novel character sprite,",
+        "prompt_suffix": "natural materials, film lighting, full body, standing front view",
+    },
+    {
+        "name": "Quadrinhos escuro",
+        "prompt_prefix": "dark comic visual novel character sprite,",
+        "prompt_suffix": "strong inked shadows, dramatic contrast, full body, standing front view",
+    },
+]

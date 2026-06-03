@@ -79,8 +79,9 @@ def queue_simple_image(
     cfg=6.5,
     sampler_name="dpmpp_2m_sde_gpu",
     scheduler="karras",
+    negative_prompt="",
 ):
-    workflow = build_workflow(prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler)
+    workflow = build_workflow(prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler, negative_prompt)
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/prompt",
         data=json.dumps({"prompt": workflow}).encode("utf-8"),
@@ -104,6 +105,7 @@ def queue_workbench_image(
     cfg=6.5,
     sampler_name="dpmpp_2m_sde_gpu",
     scheduler="karras",
+    negative_prompt="",
     preserve_generation_settings=True,
 ):
     workflow = load_api_workflow(workflows_dir, workbench_id)
@@ -118,6 +120,7 @@ def queue_workbench_image(
         cfg,
         sampler_name,
         scheduler,
+        negative_prompt,
         preserve_generation_settings,
     )
     request = urllib.request.Request(
@@ -165,9 +168,9 @@ def build_view_url(prompt_result, local_proxy_prefix="/api/comfy/view"):
     return f"{local_proxy_prefix}?prompt_id={urllib.parse.quote(prompt_id)}"
 
 
-def build_workflow(prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler):
+def build_workflow(prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler, negative_prompt=""):
     positive = build_positive_prompt(prompt, asset_type, checkpoint)
-    negative = build_negative_prompt(asset_type, checkpoint, prompt)
+    negative = negative_prompt or build_negative_prompt(asset_type, checkpoint, prompt)
 
     return {
         "3": {
@@ -253,10 +256,10 @@ def detect_workbench_inputs(workflow):
     return sorted(inputs)
 
 
-def apply_workbench_inputs(workflow, prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler, preserve_generation_settings=True):
+def apply_workbench_inputs(workflow, prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler, negative_prompt="", preserve_generation_settings=True):
     workflow = deepcopy(workflow)
     positive = str(prompt or "").strip()
-    negative = build_negative_prompt(asset_type, checkpoint, prompt)
+    negative = negative_prompt or build_negative_prompt(asset_type, checkpoint, prompt)
     assigned_positive = False
     assigned_negative = False
 
@@ -292,7 +295,7 @@ def apply_workbench_inputs(workflow, prompt, width, height, asset_type, checkpoi
             continue
         is_negative = "negative" in meta_title or looks_like_negative_prompt(existing_text)
         is_system = "system" in meta_title and "negative" not in meta_title
-        if is_negative and preserve_generation_settings:
+        if is_negative and preserve_generation_settings and not negative_prompt:
             continue
         if is_negative and not assigned_negative:
             inputs[text_key] = negative

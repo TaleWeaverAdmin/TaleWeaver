@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .config import DATA_DIR, DB_PATH, ROOT_DIR, STORIES_DIR, DEFAULT_SETTINGS
+from .config import DATA_DIR, DB_PATH, ROOT_DIR, STORIES_DIR, STYLE_COVERS_DIR, DEFAULT_SETTINGS, DEFAULT_VISUAL_STYLES
 
 
 def now_ms():
@@ -20,6 +20,7 @@ def new_id(prefix):
 def connect():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     STORIES_DIR.mkdir(parents=True, exist_ok=True)
+    STYLE_COVERS_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -43,6 +44,7 @@ def init_db():
                 genre TEXT,
                 tone TEXT,
                 visual_style TEXT,
+                visual_style_id TEXT,
                 content_rating TEXT,
                 language TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -158,8 +160,22 @@ def init_db():
                 error TEXT,
                 created_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS visual_styles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                prompt_prefix TEXT,
+                prompt_suffix TEXT,
+                negative_prompt TEXT,
+                sprite_workbench TEXT,
+                cover_path TEXT,
+                advanced_settings TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             """
         )
+        ensure_columns(conn, "stories", {"visual_style_id": "TEXT"})
         ensure_columns(
             conn,
             "characters",
@@ -177,6 +193,7 @@ def init_db():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, json.dumps(value)),
             )
+        seed_visual_styles(conn)
 
 
 def ensure_columns(conn, table, columns):
@@ -250,7 +267,7 @@ def list_stories():
 
 def update_story(story_id, payload):
     timestamp = now_ms()
-    fields = ["title", "genre", "tone", "visual_style", "content_rating", "language", "status", "lore", "summary"]
+    fields = ["title", "genre", "tone", "visual_style", "visual_style_id", "content_rating", "language", "status", "lore", "summary"]
     updates = [field for field in fields if field in payload]
     if not updates:
         return get_story(story_id)
@@ -360,6 +377,157 @@ def delete_lore_entry(lore_id):
     return get_story(story_id)
 
 
+def seed_visual_styles(conn):
+    count = conn.execute("SELECT COUNT(*) FROM visual_styles").fetchone()[0]
+    if count:
+        return
+    timestamp = now_ms()
+    for item in DEFAULT_VISUAL_STYLES:
+        conn.execute(
+            """
+            INSERT INTO visual_styles (
+                id, name, prompt_prefix, prompt_suffix, negative_prompt,
+                sprite_workbench, cover_path, advanced_settings, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("style"),
+                item.get("name") or "Estilo",
+                item.get("prompt_prefix") or "",
+                item.get("prompt_suffix") or "",
+                item.get("negative_prompt") or "",
+                item.get("sprite_workbench") or "",
+                item.get("cover_path") or "",
+                json.dumps(item.get("advanced_settings") or {}, ensure_ascii=False),
+                timestamp,
+                timestamp,
+            ),
+        )
+
+
+def list_visual_styles():
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM visual_styles
+            ORDER BY
+                CASE name
+                    WHEN 'Anime VN' THEN 0
+                    WHEN 'Fantasia painterly' THEN 1
+                    WHEN 'Anime retro' THEN 2
+                    WHEN 'Cinematico realista' THEN 3
+                    WHEN 'Quadrinhos escuro' THEN 4
+                    ELSE 10
+                END,
+                created_at,
+                name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [serialize_visual_style(row) for row in rows]
+
+
+def get_visual_style(style_id):
+    if not style_id:
+        return None
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM visual_styles WHERE id = ?", (style_id,)).fetchone()
+    return serialize_visual_style(row)
+
+
+def create_visual_style(payload):
+    timestamp = now_ms()
+    style_id = new_id("style")
+    data = normalize_visual_style_payload(payload)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO visual_styles (
+                id, name, prompt_prefix, prompt_suffix, negative_prompt,
+                sprite_workbench, cover_path, advanced_settings, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                style_id,
+                data["name"],
+                data["prompt_prefix"],
+                data["prompt_suffix"],
+                data["negative_prompt"],
+                data["sprite_workbench"],
+                data["cover_path"],
+                json.dumps(data["advanced_settings"], ensure_ascii=False),
+                timestamp,
+                timestamp,
+            ),
+        )
+    return get_visual_style(style_id)
+
+
+def update_visual_style(style_id, payload):
+    data = normalize_visual_style_payload(payload, partial=True)
+    fields = [
+        "name",
+        "prompt_prefix",
+        "prompt_suffix",
+        "negative_prompt",
+        "sprite_workbench",
+        "cover_path",
+        "advanced_settings",
+    ]
+    updates = [field for field in fields if field in data]
+    if not updates:
+        return get_visual_style(style_id)
+    timestamp = now_ms()
+    sql = ", ".join([f"{field} = ?" for field in updates] + ["updated_at = ?"])
+    values = [
+        json.dumps(data[field], ensure_ascii=False) if field == "advanced_settings" else data[field]
+        for field in updates
+    ] + [timestamp, style_id]
+    with connect() as conn:
+        conn.execute(f"UPDATE visual_styles SET {sql} WHERE id = ?", values)
+    return get_visual_style(style_id)
+
+
+def delete_visual_style(style_id):
+    style = get_visual_style(style_id)
+    if not style:
+        return None
+    with connect() as conn:
+        conn.execute("UPDATE stories SET visual_style_id = NULL WHERE visual_style_id = ?", (style_id,))
+        conn.execute("DELETE FROM visual_styles WHERE id = ?", (style_id,))
+    return style
+
+
+def visual_style_for_story(story_id):
+    if not story_id:
+        return None
+    with connect() as conn:
+        story = conn.execute("SELECT visual_style_id FROM stories WHERE id = ?", (story_id,)).fetchone()
+        if not story or not story["visual_style_id"]:
+            return None
+        row = conn.execute("SELECT * FROM visual_styles WHERE id = ?", (story["visual_style_id"],)).fetchone()
+    return serialize_visual_style(row)
+
+
+def normalize_visual_style_payload(payload, partial=False):
+    payload = payload or {}
+    data = {}
+    text_fields = ["name", "prompt_prefix", "prompt_suffix", "negative_prompt", "sprite_workbench", "cover_path"]
+    for field in text_fields:
+        if field in payload:
+            data[field] = str(payload.get(field) or "").strip()
+    if not partial or "name" in data:
+        data["name"] = data.get("name") or "Novo estilo"
+    if "advanced_settings" in payload:
+        settings = payload.get("advanced_settings")
+        data["advanced_settings"] = settings if isinstance(settings, dict) else {}
+    elif not partial:
+        data["advanced_settings"] = {}
+    if not partial:
+        for field in text_fields:
+            data.setdefault(field, "")
+    return data
+
+
 def update_scene(scene_id, payload):
     timestamp = now_ms()
     scalar_fields = ["title", "scene_text", "background_prompt", "user_input"]
@@ -415,8 +583,8 @@ def duplicate_story(story_id):
             """
             INSERT INTO stories (
                 id, title, genre, tone, visual_style, content_rating, language,
-                status, lore, player_character, summary, current_scene_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, ?, ?)
+                visual_style_id, status, lore, player_character, summary, current_scene_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, ?, ?)
             """,
             (
                 new_story_id,
@@ -426,6 +594,7 @@ def duplicate_story(story_id):
                 story["visual_style"],
                 story["content_rating"],
                 story["language"],
+                story["visual_style_id"],
                 story["lore"],
                 story["player_character"],
                 story["summary"],
@@ -636,7 +805,11 @@ def get_story(story_id):
             "SELECT * FROM generated_assets WHERE story_id = ? ORDER BY created_at DESC",
             (story_id,),
         ).fetchall()
+        style = None
+        if story["visual_style_id"]:
+            style = conn.execute("SELECT * FROM visual_styles WHERE id = ?", (story["visual_style_id"],)).fetchone()
     data = serialize_story(story)
+    data["visual_style_record"] = serialize_visual_style(style)
     data["characters"] = [serialize_character(row) for row in characters]
     data["scenes"] = [serialize_scene(row) for row in scenes]
     data["memory_entries"] = [row_to_dict(row) for row in memory]
@@ -657,8 +830,8 @@ def create_story(payload):
             """
             INSERT INTO stories (
                 id, title, genre, tone, visual_style, content_rating, language,
-                status, lore, player_character, summary, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                visual_style_id, status, lore, player_character, summary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
             """,
             (
                 story_id,
@@ -668,6 +841,7 @@ def create_story(payload):
                 payload.get("visual_style") or "",
                 payload.get("content_rating") or "",
                 payload.get("language") or "pt-BR",
+                payload.get("visual_style_id") or "",
                 lore,
                 json.dumps(player, ensure_ascii=False),
                 "A historia ainda esta no inicio.",
@@ -1059,6 +1233,15 @@ def serialize_story(row):
     data["scene_count"] = data.get("scene_count") or 0
     data["character_count"] = data.get("character_count") or 0
     data["cover_url"] = f"/api/assets/{data['cover_asset_id']}/file" if data.get("cover_asset_id") else ""
+    return data
+
+
+def serialize_visual_style(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["advanced_settings"] = json_load(data.get("advanced_settings"), {})
+    data["cover_url"] = f"/api/visual-styles/{data['id']}/cover" if data.get("cover_path") else ""
     return data
 
 

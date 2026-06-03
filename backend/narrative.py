@@ -242,7 +242,7 @@ def enrich_story_creation_payload(payload):
         return payload
 
     settings = db.get_settings()
-    workbench_id = settings.get("comfy_sprite_workbench") or ""
+    workbench_id = sprite_workbench_for_story_payload(payload, settings)
     prompt_profile = sprite_prompt_profile(settings, workbench_id)
     sources = [{"slot": "player_character", "index": -1, "character": player}]
     sources.extend({"slot": "characters", "index": index, "character": character} for index, character in enumerate(characters))
@@ -348,18 +348,19 @@ def sprite_prompt_profile(settings, workbench_id):
 
 def apply_creation_sprite_prompts(payload, settings):
     settings = settings or db.get_settings()
+    workbench_id = sprite_workbench_for_story_payload(payload, settings)
     characters = []
     player = payload.get("player_character")
     if isinstance(player, dict):
         characters.append(player)
     characters.extend(character for character in payload.get("characters") or [] if isinstance(character, dict))
     for character in characters:
-        apply_character_sprite_prompt(character, settings)
+        apply_character_sprite_prompt(character, settings, workbench_id=workbench_id)
 
 
-def apply_character_sprite_prompt(character, settings=None, story_id=None, expression="neutral"):
+def apply_character_sprite_prompt(character, settings=None, story_id=None, expression="neutral", workbench_id=None):
     settings = settings or db.get_settings()
-    workbench_id = settings.get("comfy_sprite_workbench") or ""
+    workbench_id = workbench_id if workbench_id is not None else sprite_workbench_for_story_id(story_id, settings)
     prompt_profile = sprite_prompt_profile(settings, workbench_id)
     source_prompt = build_sprite_source_prompt(character, expression, "")
     fallback = build_sprite_visual_prompt(character, expression, "")
@@ -372,6 +373,16 @@ def apply_character_sprite_prompt(character, settings=None, story_id=None, expre
         story_id=story_id,
     )
     return character
+
+
+def sprite_workbench_for_story_payload(payload, settings):
+    style = db.get_visual_style((payload or {}).get("visual_style_id"))
+    return (style or {}).get("sprite_workbench") or settings.get("comfy_sprite_workbench") or ""
+
+
+def sprite_workbench_for_story_id(story_id, settings):
+    style = db.visual_style_for_story(story_id)
+    return (style or {}).get("sprite_workbench") or settings.get("comfy_sprite_workbench") or ""
 
 
 def merge_character_enrichment(original, enriched):
@@ -561,7 +572,7 @@ def enrich_introduced_character(story, scene, payload):
     if not clean(candidate.get("name")):
         candidate["name"] = clean(payload.get("name"))
     settings = db.get_settings()
-    workbench_id = settings.get("comfy_sprite_workbench") or ""
+    workbench_id = sprite_workbench_for_story_id((story or {}).get("id"), settings)
     prompt_profile = sprite_prompt_profile(settings, workbench_id)
     scene = scene or {}
     story = story or {}

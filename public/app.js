@@ -6,6 +6,7 @@ const state = {
   ollamaModels: [],
   checkpoints: [],
   workbenches: [],
+  visualStyles: [],
   logs: [],
   drawer: "",
   busy: false,
@@ -22,6 +23,9 @@ const state = {
   spriteExitTimer: null,
   createStep: 0,
   createDraft: defaultCreateDraft(),
+  styleEditingId: "",
+  styleDraft: null,
+  styleAdvanced: false,
   editMode: false,
   storySort: "recent",
 };
@@ -38,6 +42,7 @@ function defaultCreateDraft(language = "pt-BR") {
     genre: "",
     tone: "",
     visual_style: "anime visual novel",
+    visual_style_id: "",
     content_rating: "Teen",
     language,
     lore: "",
@@ -69,8 +74,21 @@ function emptyCharacterDraft() {
   };
 }
 
+function applyDefaultVisualStyle(draft) {
+  if (!draft || draft.visual_style_id || !state.visualStyles.length) return draft;
+  const style = state.visualStyles[0];
+  draft.visual_style_id = style.id;
+  draft.visual_style = style.name || draft.visual_style;
+  return draft;
+}
+
+function initials(value) {
+  const words = String(value || "TW").trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 2).map(word => word[0]?.toUpperCase() || "").join("") || "TW";
+}
+
 async function init() {
-  await Promise.all([loadStories(), loadSettings()]);
+  await Promise.all([loadStories(), loadSettings(), loadVisualStyles()]);
   render();
 }
 
@@ -122,6 +140,15 @@ async function loadSettings() {
   }
 }
 
+async function loadVisualStyles() {
+  try {
+    const data = await api("/api/visual-styles");
+    state.visualStyles = data.styles || [];
+  } catch {
+    state.visualStyles = [];
+  }
+}
+
 function setBusy(value, status = "") {
   state.busy = value;
   state.status = status;
@@ -134,6 +161,7 @@ function render() {
       ${renderTopnav()}
       ${state.route === "dashboard" ? renderDashboard() : ""}
       ${state.route === "create" ? renderCreateStory() : ""}
+      ${state.route === "styles" ? renderVisualStyles() : ""}
       ${state.route === "settings" ? renderSettings() : ""}
       ${state.route === "logs" ? renderLogs() : ""}
       ${state.route === "play" ? renderPlay() : ""}
@@ -154,6 +182,7 @@ function renderTopnav() {
       </div>
       <nav class="nav-actions">
         <button data-action="dashboard">Histórias</button>
+        <button data-action="styles">Estilos</button>
         <button data-action="settings">Config</button>
         <button data-action="logs">Logs</button>
         <button class="primary" data-action="create">Nova história</button>
@@ -217,30 +246,12 @@ function renderSettings() {
                 ${renderWorkbenchOptions(settings.comfy_background_workbench || "")}
               </select>
             </div>
-            <div class="field">
-              <label for="comfy_sprite_workbench">Workbench de sprite</label>
-              <select id="comfy_sprite_workbench" name="comfy_sprite_workbench">
-                ${renderWorkbenchOptions(settings.comfy_sprite_workbench || "")}
-              </select>
-            </div>
-            <div class="field">
-              <label for="comfy_sprite_edit_workbench">Workbench de edicao de sprite</label>
-              <select id="comfy_sprite_edit_workbench" name="comfy_sprite_edit_workbench">
-                ${renderWorkbenchOptions(settings.comfy_sprite_edit_workbench || "")}
-              </select>
-            </div>
             ${valueField("image_width", "Background largura", settings.image_width ?? 1536)}
             ${valueField("image_height", "Background altura", settings.image_height ?? 864)}
-            ${valueField("sprite_width", "Sprite largura", settings.sprite_width ?? 1024)}
-            ${valueField("sprite_height", "Sprite altura", settings.sprite_height ?? 1536)}
             ${valueField("background_steps", "Background steps", settings.background_steps ?? 28)}
             ${valueField("background_cfg", "Background CFG", settings.background_cfg ?? 6.5)}
-            ${valueField("sprite_steps", "Sprite steps", settings.sprite_steps ?? 32)}
-            ${valueField("sprite_cfg", "Sprite CFG", settings.sprite_cfg ?? 6.0)}
             ${valueField("comfy_sampler", "Sampler", settings.comfy_sampler || "dpmpp_2m_sde_gpu")}
             ${valueField("comfy_scheduler", "Scheduler", settings.comfy_scheduler || "karras")}
-            ${valueField("sprite_sampler", "Sprite sampler", settings.sprite_sampler || "euler_ancestral")}
-            ${valueField("sprite_scheduler", "Sprite scheduler", settings.sprite_scheduler || "normal")}
           </div>
           <div class="notice">
             Checkpoints detectados: ${state.checkpoints.length ? state.checkpoints.map(escapeHtml).join(", ") : "nenhum, verifique se o ComfyUI está aberto."}
@@ -258,6 +269,188 @@ function renderSettings() {
       </form>
     </main>
   `;
+}
+
+function renderVisualStyles() {
+  const draft = currentStyleDraft();
+  return `
+    <main class="page">
+      <section class="view-title">
+        <div>
+          <h1>Estilos visuais</h1>
+          <p>Defina como os sprites serao gerados em cada historia.</p>
+        </div>
+        <button class="primary" data-action="new-style">Novo estilo</button>
+      </section>
+      <section class="style-manager">
+        <div class="panel style-list-panel">
+          <h2>Estilos</h2>
+          <div class="style-list">
+            ${state.visualStyles.length ? state.visualStyles.map(style => `
+              <button type="button" class="style-list-item ${style.id === state.styleEditingId ? "active" : ""}" data-action="edit-style" data-id="${escapeAttr(style.id)}">
+                ${renderStyleCover(style)}
+                <span>${escapeHtml(style.name || "Estilo sem nome")}</span>
+                <small>${escapeHtml(style.sprite_workbench || "Workflow simples interno")}</small>
+              </button>
+            `).join("") : `<div class="empty-state">Nenhum estilo criado.</div>`}
+          </div>
+        </div>
+        <form id="style-form" class="panel style-editor-panel">
+          <div class="section-head">
+            <h2>${state.styleEditingId ? "Editar estilo" : "Novo estilo"}</h2>
+            ${state.styleEditingId ? `<button class="danger" type="button" data-action="delete-style" data-id="${escapeAttr(state.styleEditingId)}">Excluir</button>` : ""}
+          </div>
+          <div class="style-editor-layout">
+            <div class="style-cover-picker">
+              ${renderStyleCover(draft, true)}
+              <label class="file-picker">
+                <span>Escolher imagem</span>
+                <input type="file" id="style_cover_file" name="cover_file" accept="image/png,image/jpeg,image/webp">
+              </label>
+              <small>A imagem sera copiada para a pasta do projeto.</small>
+            </div>
+            <div class="form-grid">
+              ${styleField("name", "Nome do estilo", draft.name || "")}
+              <div class="field">
+                <label for="style_sprite_workbench">ComfyUI Workflow</label>
+                <select id="style_sprite_workbench" name="sprite_workbench">
+                  ${renderWorkbenchOptions(draft.sprite_workbench || "")}
+                </select>
+              </div>
+              ${styleTextarea("prompt_prefix", "Prefixo do prompt", draft.prompt_prefix || "")}
+              ${styleTextarea("prompt_suffix", "Sufixo do prompt", draft.prompt_suffix || "")}
+              ${styleTextarea("negative_prompt", "Prompt negativo", draft.negative_prompt || "")}
+              <label class="check-row full">
+                <input type="checkbox" id="style_advanced_toggle" ${state.styleAdvanced ? "checked" : ""}>
+                <span>Campos avancados</span>
+              </label>
+              ${state.styleAdvanced ? renderStyleAdvancedFields(draft) : ""}
+            </div>
+          </div>
+          <div class="mini-actions">
+            <button type="button" data-action="dashboard">Voltar</button>
+            <button class="primary" type="submit">Salvar estilo</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  `;
+}
+
+function currentStyleDraft() {
+  if (state.styleDraft) return state.styleDraft;
+  const style = state.visualStyles.find(item => item.id === state.styleEditingId);
+  if (style) return cloneStyleDraft(style);
+  return emptyVisualStyleDraft();
+}
+
+function emptyVisualStyleDraft() {
+  return {
+    name: "",
+    prompt_prefix: "",
+    prompt_suffix: "",
+    negative_prompt: "",
+    sprite_workbench: "",
+    cover_url: "",
+    advanced_settings: {},
+  };
+}
+
+function cloneStyleDraft(style) {
+  return {
+    ...emptyVisualStyleDraft(),
+    ...style,
+    advanced_settings: { ...(style.advanced_settings || {}) },
+  };
+}
+
+function renderStyleCover(style, large = false) {
+  const name = style?.name || "Estilo";
+  const cover = style?.cover_url || "";
+  return `
+    <div class="${large ? "style-cover-large" : "style-cover-thumb"}">
+      ${cover ? `<img src="${escapeAttr(cover)}" alt="${escapeAttr(name)}">` : `<strong>${escapeHtml(initials(name))}</strong>`}
+    </div>
+  `;
+}
+
+function styleField(name, label, value) {
+  return `
+    <div class="field">
+      <label for="style_${name}">${label}</label>
+      <input id="style_${name}" name="${name}" value="${escapeAttr(value || "")}">
+    </div>
+  `;
+}
+
+function styleTextarea(name, label, value) {
+  return `
+    <div class="field full">
+      <label for="style_${name}">${label}</label>
+      <textarea id="style_${name}" name="${name}" rows="4">${escapeHtml(value || "")}</textarea>
+    </div>
+  `;
+}
+
+function renderStyleAdvancedFields(draft) {
+  const advanced = draft.advanced_settings || {};
+  const fields = advancedFieldNamesForWorkbench(draft.sprite_workbench || "");
+  if (!fields.length) {
+    return `<div class="notice full">Nenhum campo avancado detectado para este workflow.</div>`;
+  }
+  return fields.map(field => renderAdvancedStyleField(field, advanced[field] ?? defaultAdvancedStyleValue(field))).join("");
+}
+
+function renderAdvancedStyleField(field, value) {
+  const labels = {
+    width: "Sprite largura",
+    height: "Sprite altura",
+    steps: "Steps",
+    cfg: "CFG",
+    sampler_name: "Sampler",
+    scheduler: "Scheduler",
+    ckpt_name: "Checkpoint",
+  };
+  if (field === "ckpt_name") {
+    const current = value || state.settings?.comfy_checkpoint || "";
+    const options = state.checkpoints.length ? state.checkpoints : [current].filter(Boolean);
+    return `
+      <div class="field">
+        <label for="style_adv_${field}">${labels[field]}</label>
+        <select id="style_adv_${field}" name="advanced_${field}">
+          ${options.map(name => `<option value="${escapeAttr(name)}" ${name === current ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>
+      </div>
+    `;
+  }
+  return `
+    <div class="field">
+      <label for="style_adv_${field}">${labels[field] || field}</label>
+      <input id="style_adv_${field}" name="advanced_${field}" value="${escapeAttr(value || "")}">
+    </div>
+  `;
+}
+
+function advancedFieldNamesForWorkbench(workbenchId) {
+  const allowed = ["width", "height", "steps", "cfg", "sampler_name", "scheduler", "ckpt_name"];
+  if (!workbenchId) return allowed;
+  const workbench = state.workbenches.find(item => item.id === workbenchId);
+  const inputs = new Set(workbench?.inputs || []);
+  return allowed.filter(field => inputs.has(field));
+}
+
+function defaultAdvancedStyleValue(field) {
+  const settings = state.settings || {};
+  const defaults = {
+    width: settings.sprite_width ?? 1024,
+    height: settings.sprite_height ?? 1536,
+    steps: settings.sprite_steps ?? 24,
+    cfg: settings.sprite_cfg ?? 5.0,
+    sampler_name: settings.sprite_sampler || "euler_ancestral",
+    scheduler: settings.sprite_scheduler || "normal",
+    ckpt_name: settings.comfy_checkpoint || "",
+  };
+  return defaults[field] ?? "";
 }
 
 function renderOllamaModelOptions(currentModel) {
@@ -671,6 +864,33 @@ function renderCreateVisualStyle(draft) {
       <div class="review-strip">
         <strong>${escapeHtml(draft.title || "História sem título")}</strong>
         <span>${escapeHtml(draft.genre || "sem gênero")}</span>
+        <span>${escapeHtml((draft.characters || []).filter(item => item.name).length)} personagem(ns)</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderCreateVisualStyle(draft) {
+  const styles = state.visualStyles || [];
+  return `
+    <section class="panel wizard-panel">
+      <h2>Estilo visual</h2>
+      <div class="style-grid">
+        ${styles.length ? styles.map(style => `
+          <button type="button" class="style-card ${draft.visual_style_id === style.id ? "active" : ""}" data-action="select-style" data-id="${escapeAttr(style.id)}" data-value="${escapeAttr(style.name || "")}">
+            ${renderStyleCover(style, true)}
+            <span>${escapeHtml(style.name || "Estilo")}</span>
+            <small>${escapeHtml(style.sprite_workbench || "Workflow simples interno")}</small>
+          </button>
+        `).join("") : `<div class="empty-state">Crie um estilo no menu Estilos antes de finalizar a historia.</div>`}
+      </div>
+      <div class="form-grid">
+        <input type="hidden" name="visual_style_id" value="${escapeAttr(draft.visual_style_id || "")}">
+        ${draftField("visual_style", "Estilo final", "text", "anime visual novel", draft.visual_style)}
+      </div>
+      <div class="review-strip">
+        <strong>${escapeHtml(draft.title || "Historia sem titulo")}</strong>
+        <span>${escapeHtml(draft.genre || "sem genero")}</span>
         <span>${escapeHtml((draft.characters || []).filter(item => item.name).length)} personagem(ns)</span>
       </div>
     </section>
@@ -1486,6 +1706,23 @@ function bindEvents() {
   if (form) form.addEventListener("submit", createStory);
   const settingsForm = document.getElementById("settings-form");
   if (settingsForm) settingsForm.addEventListener("submit", saveSettings);
+  const styleForm = document.getElementById("style-form");
+  if (styleForm) styleForm.addEventListener("submit", saveVisualStyle);
+  const styleWorkbench = document.getElementById("style_sprite_workbench");
+  if (styleWorkbench) {
+    styleWorkbench.addEventListener("change", () => {
+      state.styleDraft = collectStyleDraft(styleForm);
+      render();
+    });
+  }
+  const styleAdvancedToggle = document.getElementById("style_advanced_toggle");
+  if (styleAdvancedToggle) {
+    styleAdvancedToggle.addEventListener("change", () => {
+      state.styleDraft = collectStyleDraft(styleForm);
+      state.styleAdvanced = styleAdvancedToggle.checked;
+      render();
+    });
+  }
   const characterForm = document.getElementById("character-form");
   if (characterForm) characterForm.addEventListener("submit", saveModalCharacter);
   const characterEditForm = document.getElementById("character-edit-form");
@@ -1533,7 +1770,9 @@ async function handleAction(event) {
     render();
   }
   if (action === "create") {
+    await loadVisualStyles();
     state.createDraft = defaultCreateDraft(state.settings?.default_language || "pt-BR");
+    applyDefaultVisualStyle(state.createDraft);
     state.createStep = 0;
     state.route = "create";
     render();
@@ -1541,6 +1780,7 @@ async function handleAction(event) {
   if (action === "quick-create-story") {
     const prompt = document.getElementById("quick-story-prompt")?.value || "";
     state.createDraft = defaultCreateDraft(state.settings?.default_language || "pt-BR");
+    applyDefaultVisualStyle(state.createDraft);
     state.createDraft.story_prompt = prompt.trim();
     state.createStep = 0;
     state.route = "create";
@@ -1553,6 +1793,27 @@ async function handleAction(event) {
     state.route = "settings";
     render();
   }
+  if (action === "styles") {
+    await Promise.all([loadVisualStyles(), loadSettings()]);
+    state.route = "styles";
+    state.styleEditingId = state.styleEditingId || state.visualStyles[0]?.id || "";
+    state.styleDraft = null;
+    render();
+  }
+  if (action === "new-style") {
+    state.styleEditingId = "";
+    state.styleDraft = emptyVisualStyleDraft();
+    state.styleAdvanced = false;
+    render();
+  }
+  if (action === "edit-style") {
+    state.styleEditingId = event.currentTarget.dataset.id || "";
+    const style = state.visualStyles.find(item => item.id === state.styleEditingId);
+    state.styleDraft = style ? cloneStyleDraft(style) : emptyVisualStyleDraft();
+    state.styleAdvanced = false;
+    render();
+  }
+  if (action === "delete-style") deleteVisualStyle(event.currentTarget.dataset.id);
   if (action === "logs") {
     await loadLogs();
     state.route = "logs";
@@ -1583,7 +1844,10 @@ async function handleAction(event) {
   }
   if (action === "select-style") {
     saveCreateDraft();
-    state.createDraft.visual_style = event.currentTarget.dataset.value;
+    const styleId = event.currentTarget.dataset.id || "";
+    const style = state.visualStyles.find(item => item.id === styleId);
+    state.createDraft.visual_style_id = styleId;
+    state.createDraft.visual_style = style?.name || event.currentTarget.dataset.value || state.createDraft.visual_style;
     render();
   }
   if (action === "generate-story-seed") generateStorySeed();
@@ -1722,6 +1986,88 @@ async function saveSettings(event) {
   }
 }
 
+async function saveVisualStyle(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = collectStyleDraft(form);
+  if (!payload.name.trim()) {
+    alert("Informe o nome do estilo.");
+    return;
+  }
+  setBusy(true, "Salvando estilo...");
+  try {
+    const saved = state.styleEditingId
+      ? await api(`/api/visual-styles/${state.styleEditingId}`, { method: "PATCH", body: JSON.stringify(payload) })
+      : await api("/api/visual-styles", { method: "POST", body: JSON.stringify(payload) });
+    const file = document.getElementById("style_cover_file")?.files?.[0];
+    let finalStyle = saved;
+    if (file) {
+      const upload = new FormData();
+      upload.append("image", file);
+      finalStyle = await uploadStyleCover(saved.id, upload);
+    }
+    await loadVisualStyles();
+    state.styleEditingId = finalStyle.id;
+    state.styleDraft = cloneStyleDraft(finalStyle);
+    alert("Estilo salvo.");
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function uploadStyleCover(styleId, formData) {
+  const response = await fetch(`/api/visual-styles/${encodeURIComponent(styleId)}/cover`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Erro ao enviar imagem.");
+  return data;
+}
+
+function collectStyleDraft(form) {
+  const data = form ? new FormData(form) : new FormData();
+  const current = currentStyleDraft();
+  const advanced = state.styleAdvanced ? {} : { ...(current.advanced_settings || {}) };
+  if (state.styleAdvanced) {
+    for (const [key, value] of data.entries()) {
+      if (!key.startsWith("advanced_")) continue;
+      const field = key.replace("advanced_", "");
+      if (String(value || "").trim()) {
+        advanced[field] = ["width", "height", "steps"].includes(field) ? Number(value) : (field === "cfg" ? Number(value) : value);
+      }
+    }
+  }
+  return {
+    ...current,
+    name: String(data.get("name") || "").trim(),
+    prompt_prefix: String(data.get("prompt_prefix") || "").trim(),
+    prompt_suffix: String(data.get("prompt_suffix") || "").trim(),
+    negative_prompt: String(data.get("negative_prompt") || "").trim(),
+    sprite_workbench: String(data.get("sprite_workbench") || "").trim(),
+    advanced_settings: advanced,
+  };
+}
+
+async function deleteVisualStyle(styleId) {
+  if (!styleId) return;
+  const style = state.visualStyles.find(item => item.id === styleId);
+  if (!confirm(`Excluir o estilo "${style?.name || styleId}"? Historias existentes manterao apenas o nome do estilo.`)) return;
+  setBusy(true, "Excluindo estilo...");
+  try {
+    await api(`/api/visual-styles/${styleId}`, { method: "DELETE" });
+    await loadVisualStyles();
+    state.styleEditingId = state.visualStyles[0]?.id || "";
+    state.styleDraft = null;
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function testComfy() {
   setBusy(true, "Testando ComfyUI...");
   try {
@@ -1776,6 +2122,7 @@ function saveCreateDraft() {
     "title",
     "genre",
     "tone",
+    "visual_style_id",
     "visual_style",
     "content_rating",
     "language",
@@ -1922,6 +2269,7 @@ async function createStory(event) {
     genre: draft.genre,
     tone: draft.tone,
     visual_style: draft.visual_style,
+    visual_style_id: draft.visual_style_id,
     content_rating: draft.content_rating,
     language: draft.language || "pt-BR",
     starting_location: draft.starting_location,

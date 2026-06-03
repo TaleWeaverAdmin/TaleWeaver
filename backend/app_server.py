@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import comfy_client, db, narrative, ollama_client
-from .config import ROOT_DIR, STORIES_DIR
+from .config import ROOT_DIR, STORIES_DIR, STYLE_COVERS_DIR
 
 
 PUBLIC_DIR = ROOT_DIR / "public"
@@ -33,6 +33,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True})
             if path == "/api/settings":
                 return self.send_json(db.get_settings())
+            if path == "/api/visual-styles":
+                return self.send_json({"styles": db.list_visual_styles()})
+            if path.startswith("/api/visual-styles/") and path.endswith("/cover"):
+                style_id = path.strip("/").split("/")[2]
+                return self.serve_visual_style_cover(style_id)
             if path == "/api/ollama/models":
                 settings = db.get_settings()
                 return self.send_json({"models": ollama_client.list_models(settings.get("ollama_url"))})
@@ -75,13 +80,18 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        payload = self.read_json()
+        payload = {} if self.is_multipart() else self.read_json()
 
         try:
             if path == "/api/app/shutdown":
                 return self.shutdown_app()
             if path == "/api/settings":
                 return self.send_json(db.update_settings(payload))
+            if path == "/api/visual-styles":
+                return self.send_json(db.create_visual_style(payload), 201)
+            if path.startswith("/api/visual-styles/") and path.endswith("/cover"):
+                style_id = path.strip("/").split("/")[2]
+                return self.upload_visual_style_cover(style_id)
             if path == "/api/ai/improve":
                 return self.send_json(narrative.improve_text(payload))
             if path == "/api/ai/story-seed":
@@ -184,6 +194,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not story:
                     return self.send_error_json(404, "Lore nao encontrado.")
                 return self.send_json(story)
+            if len(parts) == 3 and parts[:2] == ["api", "visual-styles"]:
+                style = db.update_visual_style(parts[2], payload)
+                if not style:
+                    return self.send_error_json(404, "Estilo nao encontrado.")
+                return self.send_json(style)
             return self.send_error_json(404, "Endpoint nao encontrado.")
         except Exception as exc:
             return self.send_error_json(500, str(exc))
@@ -207,6 +222,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not story:
                     return self.send_error_json(404, "Lore nao encontrado.")
                 return self.send_json(story)
+            if len(parts) == 3 and parts[:2] == ["api", "visual-styles"]:
+                return self.delete_visual_style(parts[2])
             return self.send_error_json(404, "Endpoint nao encontrado.")
         except Exception as exc:
             return self.send_error_json(500, str(exc))
@@ -237,27 +254,92 @@ class AppHandler(BaseHTTPRequestHandler):
             "delete_error": delete_error,
         })
 
+    def upload_visual_style_cover(self, style_id):
+        style = db.get_visual_style(style_id)
+        if not style:
+            return self.send_error_json(404, "Estilo nao encontrado.")
+        upload = self.read_multipart_file("image")
+        if not upload or not upload.get("body"):
+            return self.send_error_json(400, "Imagem nao enviada.")
+
+        original_name = upload.get("filename") or "cover.png"
+        extension = Path(original_name).suffix.lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            extension = ".png"
+        STYLE_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        relative_path = STYLE_COVERS_DIR.relative_to(ROOT_DIR) / f"{style_id}{extension}"
+        target = ROOT_DIR / relative_path
+        target.write_bytes(upload["body"])
+
+        previous = style.get("cover_path")
+        if previous and previous != relative_path.as_posix():
+            previous_target = (ROOT_DIR / previous).resolve()
+            if is_relative_to(previous_target, STYLE_COVERS_DIR.resolve()) and previous_target.exists():
+                try:
+                    previous_target.unlink()
+                except OSError:
+                    pass
+
+        updated = db.update_visual_style(style_id, {"cover_path": relative_path.as_posix()})
+        return self.send_json(updated)
+
+    def serve_visual_style_cover(self, style_id):
+        style = db.get_visual_style(style_id)
+        if not style or not style.get("cover_path"):
+            return self.send_error_json(404, "Capa do estilo nao encontrada.")
+        target = (ROOT_DIR / style["cover_path"]).resolve()
+        if not is_relative_to(target, STYLE_COVERS_DIR.resolve()) or not target.exists() or not target.is_file():
+            return self.send_error_json(404, "Arquivo da capa nao encontrado.")
+        content_type = mimetypes.guess_type(str(target))[0] or "image/png"
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def delete_visual_style(self, style_id):
+        style = db.get_visual_style(style_id)
+        if not style:
+            return self.send_error_json(404, "Estilo nao encontrado.")
+        if style.get("cover_path"):
+            target = (ROOT_DIR / style["cover_path"]).resolve()
+            if is_relative_to(target, STYLE_COVERS_DIR.resolve()) and target.exists() and target.is_file():
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+        deleted = db.delete_visual_style(style_id)
+        return self.send_json({"deleted": True, "style": deleted})
+
     def generate_image(self, story_id, payload):
         settings = db.get_settings()
         asset_type = payload.get("asset_type") or "background"
-        requested_workbench = payload.get("workbench") or default_workbench_for_asset(settings, asset_type)
+        visual_style = db.visual_style_for_story(story_id) if asset_type == "sprite" else None
+        style_settings = (visual_style or {}).get("advanced_settings") or {}
+        requested_workbench = payload.get("workbench") or style_workbench(visual_style) or default_workbench_for_asset(settings, asset_type)
         width = int(payload.get("width") or settings.get("image_width") or 1024)
         height = int(payload.get("height") or settings.get("image_height") or 576)
         steps = int(settings.get("background_steps") or 28)
         cfg = float(settings.get("background_cfg") or 6.5)
+        negative_prompt = ""
         prompt = payload.get("prompt") or ""
         source_prompt = prompt
         prompt_source = "local"
         if asset_type == "sprite":
-            width = int(payload.get("width") or settings.get("sprite_width") or 640)
-            height = int(payload.get("height") or settings.get("sprite_height") or 960)
-            steps = int(settings.get("sprite_steps") or 24)
-            cfg = float(settings.get("sprite_cfg") or 5.0)
+            width = int(payload.get("width") or style_settings.get("width") or settings.get("sprite_width") or 640)
+            height = int(payload.get("height") or style_settings.get("height") or settings.get("sprite_height") or 960)
+            steps = int(style_settings.get("steps") or settings.get("sprite_steps") or 24)
+            cfg = float(style_settings.get("cfg") or settings.get("sprite_cfg") or 5.0)
             character = db.get_character(payload.get("character_id")) if payload.get("character_id") else None
             prompt = (prompt or (character or {}).get("visual_prompt") or "").strip()
             source_prompt = prompt
             if not prompt:
                 return self.send_error_json(400, "Prompt de imagem do personagem vazio.")
+            prompt = apply_style_prompt(visual_style, prompt)
+            prompt_source = "visual-style" if visual_style else "local"
+            negative_prompt = (visual_style or {}).get("negative_prompt") or ""
         elif asset_type == "background":
             source_prompt = prompt.strip()
             story = db.get_story(story_id) or {}
@@ -285,10 +367,11 @@ class AppHandler(BaseHTTPRequestHandler):
         sampler = settings.get("comfy_sampler")
         scheduler = settings.get("comfy_scheduler")
         if asset_type == "sprite":
-            sampler = settings.get("sprite_sampler") or sampler
-            scheduler = settings.get("sprite_scheduler") or scheduler
+            sampler = style_settings.get("sampler_name") or settings.get("sprite_sampler") or sampler
+            scheduler = style_settings.get("scheduler") or settings.get("sprite_scheduler") or scheduler
 
-        checkpoint = payload.get("checkpoint") or settings.get("comfy_checkpoint")
+        checkpoint = payload.get("checkpoint") or style_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
+        preserve_workbench_settings = not bool(visual_style and style_settings)
         result, workbench_id = self.queue_comfy_image(
             settings,
             asset_type,
@@ -301,6 +384,8 @@ class AppHandler(BaseHTTPRequestHandler):
             sampler,
             scheduler,
             requested_workbench,
+            negative_prompt,
+            preserve_workbench_settings,
         )
         db.add_api_log(
             "comfyui",
@@ -316,7 +401,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 "sampler": sampler,
                 "scheduler": scheduler,
                 "prompt_source": prompt_source,
-                "workbench_generation_settings": "preserved" if workbench_id else "app",
+                "visual_style_id": (visual_style or {}).get("id") or "",
+                "negative_prompt": negative_prompt,
+                "workbench_generation_settings": "preserved" if workbench_id and preserve_workbench_settings else "app",
                 "source_prompt": source_prompt,
                 "prompt": prompt,
             },
@@ -331,8 +418,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 "scene_id": payload.get("scene_id"),
                 "expression": payload.get("expression"),
                 "prompt": prompt,
+                "negative_prompt": negative_prompt,
                 "remote_ref": result.get("prompt_id", ""),
-                "metadata": {"workbench": workbench_id, **result},
+                "metadata": {"workbench": workbench_id, "visual_style_id": (visual_style or {}).get("id") or "", **result},
             },
         )
         return self.send_json({"asset_id": asset_id, "queued": result})
@@ -343,7 +431,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.send_error_json(404, "Personagem nao encontrado.")
 
         settings = db.get_settings()
-        workbench_id = payload.get("workbench") or default_workbench_for_asset(settings, "sprite")
+        visual_style = db.visual_style_for_story(character.get("story_id"))
+        workbench_id = payload.get("workbench") or style_workbench(visual_style) or default_workbench_for_asset(settings, "sprite")
         prompt_profile = prompt_profile_for_workbench(settings, workbench_id)
         expression = payload.get("expression") or "neutral"
         instructions = payload.get("instructions") or ""
@@ -402,7 +491,22 @@ class AppHandler(BaseHTTPRequestHandler):
         )
         return self.send_json({"character": character, "story": updated_story, "already_exists": False}, 201)
 
-    def queue_comfy_image(self, settings, asset_type, prompt, width, height, checkpoint, steps, cfg, sampler, scheduler, requested_workbench=""):
+    def queue_comfy_image(
+        self,
+        settings,
+        asset_type,
+        prompt,
+        width,
+        height,
+        checkpoint,
+        steps,
+        cfg,
+        sampler,
+        scheduler,
+        requested_workbench="",
+        negative_prompt="",
+        preserve_generation_settings=True,
+    ):
         workbench_id = requested_workbench or default_workbench_for_asset(settings, asset_type)
         if workbench_id:
             if settings.get("comfy_free_memory_between_workbench_runs") is not False:
@@ -422,11 +526,13 @@ class AppHandler(BaseHTTPRequestHandler):
                     width,
                     height,
                     asset_type,
-                    "",
+                    "" if preserve_generation_settings else checkpoint,
                     steps,
                     cfg,
                     sampler,
                     scheduler,
+                    negative_prompt,
+                    preserve_generation_settings,
                 ),
                 workbench_id,
             )
@@ -442,6 +548,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 cfg,
                 sampler,
                 scheduler,
+                negative_prompt,
             ),
             "",
         )
@@ -789,6 +896,37 @@ class AppHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw) if raw else {}
 
+    def is_multipart(self):
+        return "multipart/form-data" in (self.headers.get("Content-Type") or "")
+
+    def read_multipart_file(self, field_name):
+        content_type = self.headers.get("Content-Type") or ""
+        match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
+        if not match:
+            return None
+        boundary = match.group("boundary").strip().strip('"').encode("utf-8")
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        delimiter = b"--" + boundary
+        for part in body.split(delimiter):
+            if not part or part in {b"--\r\n", b"--"}:
+                continue
+            part = part.strip(b"\r\n")
+            header_blob, separator, content = part.partition(b"\r\n\r\n")
+            if not separator:
+                continue
+            headers = header_blob.decode("utf-8", errors="ignore")
+            disposition = parse_content_disposition(headers)
+            if disposition.get("name") != field_name:
+                continue
+            if content.endswith(b"\r\n"):
+                content = content[:-2]
+            return {
+                "filename": disposition.get("filename") or "",
+                "body": content,
+            }
+        return None
+
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -840,6 +978,20 @@ def default_workbench_for_asset(settings, asset_type):
     return ""
 
 
+def style_workbench(style):
+    return (style or {}).get("sprite_workbench") or ""
+
+
+def apply_style_prompt(style, prompt):
+    style = style or {}
+    parts = [
+        style.get("prompt_prefix") or "",
+        prompt or "",
+        style.get("prompt_suffix") or "",
+    ]
+    return " ".join(str(part).strip() for part in parts if str(part or "").strip())
+
+
 def prompt_profile_for_workbench(settings, workbench_id):
     if not workbench_id:
         return None
@@ -852,6 +1004,18 @@ def prompt_profile_for_workbench(settings, workbench_id):
     if profile.get("style") or profile.get("example"):
         return profile
     return None
+
+
+def parse_content_disposition(headers):
+    result = {}
+    for line in headers.splitlines():
+        if not line.lower().startswith("content-disposition:"):
+            continue
+        for item in line.split(";")[1:]:
+            key, separator, value = item.strip().partition("=")
+            if separator:
+                result[key.strip().lower()] = value.strip().strip('"')
+    return result
 
 
 def delete_path_with_retries(target, attempts=6):

@@ -949,7 +949,7 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
     style = clean(prompt_profile.get("style"))
     example = clean(prompt_profile.get("example"))
     if not source_text or not (style or example):
-        return fallback_prompt
+        return reinforce_required_clothing(fallback_prompt, source_text)
 
     settings = db.get_settings()
     system = (
@@ -996,8 +996,8 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
             result,
             story_id=story_id,
         )
-        visual_prompt = extract_visual_prompt(result)
-        return clean(visual_prompt) or fallback_prompt
+        visual_prompt = clean(extract_visual_prompt(result)) or fallback_prompt
+        return reinforce_required_clothing(visual_prompt, source_text)
     except Exception as exc:
         db.add_api_log(
             "ollama",
@@ -1007,7 +1007,7 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
             error=str(exc),
             story_id=story_id,
         )
-        return fallback_prompt
+        return reinforce_required_clothing(fallback_prompt, source_text)
 
 
 def build_sprite_visual_prompt(character, expression=None, user_prompt=""):
@@ -1035,7 +1035,7 @@ def build_sprite_visual_prompt(character, expression=None, user_prompt=""):
     tags.extend(outfit_prompt_tags(lower))
     tags.extend(expression_prompt_tags(expression or lower))
     if clothing:
-        tags.append(f"outfit: {clothing}")
+        tags.append(required_clothing_prompt(clothing))
 
     tags.extend(["clean lineart", "detailed face", "detailed eyes", "clean silhouette", "simple light gray background"])
     return dedupe_tags(tags)
@@ -1057,6 +1057,110 @@ def build_sprite_source_prompt(character, expression=None, user_prompt=""):
         "Create the final image prompt in English only. Sprite requirements: one character only, full body, standing, front view, visual novel sprite, simple light background. Do not invent or replace the outfit."
     )
     return "\n".join(parts)
+
+
+def reinforce_required_clothing(prompt, source_text):
+    prompt = clean(prompt)
+    clothing = extract_source_clothing(source_text)
+    if not clothing:
+        return prompt
+    required = required_clothing_prompt(clothing)
+    if clothing_already_present(prompt, clothing):
+        return prompt
+    return dedupe_tags([prompt, required])
+
+
+def extract_source_clothing(source_text):
+    text = str(source_text or "")
+    for line in text.splitlines():
+        if line.lower().startswith("clothing"):
+            _, _, value = line.partition(":")
+            return clean(value)
+    return ""
+
+
+def clothing_already_present(prompt, clothing):
+    prompt_text = clean(prompt).lower()
+    clothing_text = clean(clothing).lower()
+    if not prompt_text or not clothing_text:
+        return False
+    markers = clothing_markers(clothing_text)
+    return any(marker and marker in prompt_text for marker in markers)
+
+
+def clothing_markers(clothing_text):
+    markers = set()
+    for token in re.findall(r"[a-zA-ZÀ-ÿ0-9]+", clothing_text.lower()):
+        if len(token) >= 4:
+            markers.add(token)
+    translated = translate_clothing_terms(clothing_text).lower()
+    for token in re.findall(r"[a-zA-Z0-9]+", translated):
+        if len(token) >= 4:
+            markers.add(token)
+    return markers
+
+
+def required_clothing_prompt(clothing):
+    translated = translate_clothing_terms(clothing)
+    return f"mandatory exact clothing state: {translated}"
+
+
+def translate_clothing_terms(clothing):
+    text = clean(clothing).lower()
+    replacements = [
+        ("apenas de cueca boxer", "wearing only boxer briefs"),
+        ("apenas de cueca", "wearing only men's underwear, briefs"),
+        ("só de cueca boxer", "wearing only boxer briefs"),
+        ("so de cueca boxer", "wearing only boxer briefs"),
+        ("só de cueca", "wearing only men's underwear, briefs"),
+        ("so de cueca", "wearing only men's underwear, briefs"),
+        ("de cueca boxer", "wearing boxer briefs"),
+        ("de cueca", "wearing men's underwear, briefs"),
+        ("sem roupa", "nude, no clothes"),
+        ("sem roupas", "nude, no clothes"),
+        ("sem vestimenta", "nude, no clothes"),
+        ("pelada", "nude"),
+        ("pelado", "nude"),
+        ("nua", "nude"),
+        ("nu", "nude"),
+        ("nudez", "nudity"),
+        ("cueca boxer", "boxer briefs"),
+        ("cueca", "men's underwear, briefs"),
+        ("calcinha", "panties"),
+        ("sutia", "bra"),
+        ("sutiã", "bra"),
+        ("lingerie", "lingerie"),
+        ("roupa intima", "underwear"),
+        ("roupa íntima", "underwear"),
+        ("casaco", "coat"),
+        ("jaqueta", "jacket"),
+        ("calça", "pants"),
+        ("calca", "pants"),
+        ("camisa", "shirt"),
+        ("vestido", "dress"),
+        ("botas", "boots"),
+        ("bota", "boot"),
+        ("vermelho", "red"),
+        ("vermelha", "red"),
+        ("preto", "black"),
+        ("preta", "black"),
+        ("branco", "white"),
+        ("branca", "white"),
+        ("azul", "blue"),
+        ("verde", "green"),
+        ("dourado", "gold"),
+        ("dourada", "gold"),
+        ("prateado", "silver"),
+        ("prateada", "silver"),
+        ("couro", "leather"),
+        ("rasgada", "torn"),
+        ("rasgado", "torn"),
+        ("metalicas", "metallic"),
+        ("metálicas", "metallic"),
+    ]
+    for source, target in replacements:
+        text = re.sub(rf"(?<!\w){re.escape(source)}(?!\w)", target, text, flags=re.I)
+    return text or clean(clothing)
 
 
 def build_background_visual_prompt(story, scene):

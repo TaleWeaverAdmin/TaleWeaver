@@ -1,4 +1,5 @@
 import json
+import copy
 import re
 import shutil
 import sqlite3
@@ -8,6 +9,16 @@ from pathlib import Path
 
 from .config import DATA_DIR, DB_PATH, ROOT_DIR, STORIES_DIR, STYLE_COVERS_DIR, DEFAULT_SETTINGS, DEFAULT_VISUAL_STYLES
 
+SECRET_SETTING_KEYS = {
+    "openai_api_key",
+    "openai_compatible_api_key",
+    "story_ai_openai_compatible_api_key",
+    "scene_ai_openai_compatible_api_key",
+}
+MASKED_SECRET_VALUE = "********"
+OFFICIAL_EXPRESSIONS = ["neutral", "happy", "sad", "angry", "thoughtful", "surprised", "embarrassed", "scared"]
+EXPRESSION_PROMPT_KEYS = [item for item in OFFICIAL_EXPRESSIONS if item != "neutral"]
+
 
 def now_ms():
     return int(time.time() * 1000)
@@ -15,6 +26,26 @@ def now_ms():
 
 def new_id(prefix):
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def normalize_participation_mode(value):
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "first": "first_person",
+        "first_person": "first_person",
+        "primeira": "first_person",
+        "primeira_pessoa": "first_person",
+        "1": "first_person",
+        "third": "third_person",
+        "third_person": "third_person",
+        "terceira": "third_person",
+        "terceira_pessoa": "third_person",
+        "3": "third_person",
+        "narrator": "narrator",
+        "narrador": "narrator",
+        "narrative": "narrator",
+    }
+    return aliases.get(text, "first_person")
 
 
 def connect():
@@ -45,6 +76,7 @@ def init_db():
                 tone TEXT,
                 visual_style TEXT,
                 visual_style_id TEXT,
+                participation_mode TEXT NOT NULL DEFAULT 'first_person',
                 content_rating TEXT,
                 language TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -73,12 +105,28 @@ def init_db():
                 secrets TEXT,
                 speech_style TEXT,
                 visual_prompt TEXT,
+                expression_prompts TEXT NOT NULL DEFAULT '{}',
+                active_appearance_id TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 importance TEXT NOT NULL DEFAULT 'secondary',
                 is_player INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS character_appearances (
+                id TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                label TEXT,
+                primary_asset_id TEXT,
+                neutral_asset_id TEXT,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
+                FOREIGN KEY(primary_asset_id) REFERENCES generated_assets(id) ON DELETE SET NULL,
+                FOREIGN KEY(neutral_asset_id) REFERENCES generated_assets(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS scenes (
@@ -125,7 +173,9 @@ def init_db():
                 story_id TEXT NOT NULL,
                 character_id TEXT,
                 scene_id TEXT,
+                appearance_id TEXT,
                 asset_type TEXT NOT NULL,
+                base_asset_id TEXT,
                 expression TEXT,
                 prompt TEXT,
                 negative_prompt TEXT,
@@ -168,6 +218,22 @@ def init_db():
                 prompt_suffix TEXT,
                 negative_prompt TEXT,
                 sprite_workbench TEXT,
+                background_workbench TEXT,
+                background_prompt_prefix TEXT,
+                background_prompt_suffix TEXT,
+                background_negative_prompt TEXT,
+                background_settings TEXT NOT NULL DEFAULT '{}',
+                sprite_prompt_command TEXT,
+                sprite_prompt_example TEXT,
+                background_prompt_command TEXT,
+                background_prompt_example TEXT,
+                appearance_workbench TEXT,
+                appearance_prompt_command TEXT,
+                appearance_prompt_example TEXT,
+                expressions_enabled INTEGER NOT NULL DEFAULT 0,
+                expression_prompts_visible INTEGER NOT NULL DEFAULT 0,
+                expression_workbench TEXT,
+                expression_prompts TEXT NOT NULL DEFAULT '{}',
                 cover_path TEXT,
                 advanced_settings TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL,
@@ -175,7 +241,30 @@ def init_db():
             );
             """
         )
-        ensure_columns(conn, "stories", {"visual_style_id": "TEXT"})
+        ensure_columns(conn, "stories", {"visual_style_id": "TEXT", "participation_mode": "TEXT NOT NULL DEFAULT 'first_person'"})
+        ensure_columns(
+            conn,
+            "visual_styles",
+            {
+                "background_workbench": "TEXT",
+                "background_prompt_prefix": "TEXT",
+                "background_prompt_suffix": "TEXT",
+                "background_negative_prompt": "TEXT",
+                "background_settings": "TEXT NOT NULL DEFAULT '{}'",
+                "sprite_prompt_command": "TEXT",
+                "sprite_prompt_example": "TEXT",
+                "background_prompt_command": "TEXT",
+                "background_prompt_example": "TEXT",
+                "appearance_workbench": "TEXT",
+                "appearance_prompt_command": "TEXT",
+                "appearance_prompt_example": "TEXT",
+                "expressions_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "expression_prompts_visible": "INTEGER NOT NULL DEFAULT 0",
+                "expression_workbench": "TEXT",
+                "expression_prompts": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        ensure_columns(conn, "generated_assets", {"base_asset_id": "TEXT", "appearance_id": "TEXT"})
         ensure_columns(
             conn,
             "characters",
@@ -186,14 +275,18 @@ def init_db():
                 "aliases": "TEXT",
                 "description": "TEXT",
                 "clothing": "TEXT",
+                "expression_prompts": "TEXT NOT NULL DEFAULT '{}'",
+                "active_appearance_id": "TEXT",
             },
         )
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, json.dumps(value)),
-            )
+        )
         seed_visual_styles(conn)
+        backfill_visual_style_backgrounds(conn)
+        run_once(conn, "cleanup_visual_style_background_prompts_v1", cleanup_visual_style_background_prompts)
 
 
 def ensure_columns(conn, table, columns):
@@ -201,6 +294,15 @@ def ensure_columns(conn, table, columns):
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def run_once(conn, key, callback):
+    marker = f"migration:{key}"
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (marker,)).fetchone()
+    if row:
+        return
+    callback(conn)
+    conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, json.dumps(True)))
 
 
 def row_to_dict(row):
@@ -219,12 +321,24 @@ def json_load(value, default):
 def get_settings():
     with connect() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    return {row["key"]: json_load(row["value"], row["value"]) for row in rows}
+    settings = dict(DEFAULT_SETTINGS)
+    settings.update({row["key"]: json_load(row["value"], row["value"]) for row in rows})
+    return settings
+
+
+def public_settings():
+    settings = get_settings()
+    for key in SECRET_SETTING_KEYS:
+        if settings.get(key):
+            settings[key] = MASKED_SECRET_VALUE
+    return settings
 
 
 def update_settings(values):
     with connect() as conn:
         for key, value in values.items():
+            if key in SECRET_SETTING_KEYS and (value is None or value == "" or value == MASKED_SECRET_VALUE):
+                continue
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -267,7 +381,9 @@ def list_stories():
 
 def update_story(story_id, payload):
     timestamp = now_ms()
-    fields = ["title", "genre", "tone", "visual_style", "visual_style_id", "content_rating", "language", "status", "lore", "summary"]
+    if "participation_mode" in payload or "point_of_view" in payload:
+        payload["participation_mode"] = normalize_participation_mode(payload.get("participation_mode") or payload.get("point_of_view"))
+    fields = ["title", "genre", "tone", "visual_style", "visual_style_id", "participation_mode", "content_rating", "language", "status", "lore", "summary"]
     updates = [field for field in fields if field in payload]
     if not updates:
         return get_story(story_id)
@@ -387,8 +503,13 @@ def seed_visual_styles(conn):
             """
             INSERT INTO visual_styles (
                 id, name, prompt_prefix, prompt_suffix, negative_prompt,
-                sprite_workbench, cover_path, advanced_settings, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sprite_workbench, background_workbench, background_prompt_prefix,
+                background_prompt_suffix, background_negative_prompt, background_settings,
+                sprite_prompt_command, sprite_prompt_example, background_prompt_command,
+                background_prompt_example, appearance_workbench, appearance_prompt_command, appearance_prompt_example,
+                expressions_enabled, expression_prompts_visible, expression_workbench,
+                expression_prompts, cover_path, advanced_settings, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id("style"),
@@ -397,12 +518,144 @@ def seed_visual_styles(conn):
                 item.get("prompt_suffix") or "",
                 item.get("negative_prompt") or "",
                 item.get("sprite_workbench") or "",
+                item.get("background_workbench") or "",
+                item.get("background_prompt_prefix") or "",
+                item.get("background_prompt_suffix") or "",
+                item.get("background_negative_prompt") or "",
+                json.dumps(item.get("background_settings") or {}, ensure_ascii=False),
+                item.get("sprite_prompt_command") or "",
+                item.get("sprite_prompt_example") or "",
+                item.get("background_prompt_command") or "",
+                item.get("background_prompt_example") or "",
+                item.get("appearance_workbench") or "",
+                item.get("appearance_prompt_command") or "",
+                item.get("appearance_prompt_example") or "",
+                1 if item.get("expressions_enabled") else 0,
+                1 if item.get("expression_prompts_visible") else 0,
+                item.get("expression_workbench") or "",
+                json.dumps(normalize_expression_prompts(item.get("expression_prompts") or {}), ensure_ascii=False),
                 item.get("cover_path") or "",
                 json.dumps(item.get("advanced_settings") or {}, ensure_ascii=False),
                 timestamp,
                 timestamp,
             ),
         )
+
+
+def backfill_visual_style_backgrounds(conn):
+    defaults = {item.get("name"): item for item in DEFAULT_VISUAL_STYLES}
+    timestamp = now_ms()
+    rows = conn.execute("SELECT * FROM visual_styles").fetchall()
+    for row in rows:
+        item = defaults.get(row["name"])
+        if not item:
+            continue
+        updates = {}
+        for field in [
+            "background_workbench",
+            "background_prompt_prefix",
+            "background_prompt_suffix",
+            "background_negative_prompt",
+        ]:
+            if not row[field] and item.get(field):
+                updates[field] = item.get(field)
+        current_settings = json_load(row["background_settings"], {})
+        if not current_settings and item.get("background_settings"):
+            updates["background_settings"] = json.dumps(item.get("background_settings") or {}, ensure_ascii=False)
+        if not updates:
+            continue
+        sql = ", ".join([f"{field} = ?" for field in updates] + ["updated_at = ?"])
+        conn.execute(
+            f"UPDATE visual_styles SET {sql} WHERE id = ?",
+            [*updates.values(), timestamp, row["id"]],
+        )
+
+
+LEGACY_BACKGROUND_POSITIVE_NOISE = [
+    "empty visual novel background",
+    "empty environment",
+    "unique memorable landmark",
+    "environment details tied to the current story conflict",
+    "specific props and visual clues",
+    "specific architecture and spatial layout",
+    "distinct foreground, midground, and background depth",
+    "layered foreground, midground, and background depth",
+    "detailed architecture, props, materials, lighting, atmosphere, and color palette",
+    "wide establishing shot",
+    "environment-focused composition",
+    "detailed environment art",
+    "environmental storytelling objects",
+    "environmental storytelling",
+    "moody environmental storytelling",
+    "still background plate with no moving subjects",
+    "detailed static background plate",
+    "static empty scene composition",
+    "layered foreground midground background",
+    "clear material textures",
+    "cinematic atmospheric lighting",
+    "cinematic lighting",
+    "cohesive color palette",
+    "high detail environment concept art",
+    "high detail polished anime visual novel background art",
+    "polished anime visual novel background art",
+    "polished anime background art",
+    "polished anime background",
+    "polished background art",
+    "high detail",
+    "no people",
+    "no characters",
+    "no humans",
+    "no faces",
+    "no bodies",
+    "no silhouettes",
+    "no crowd",
+    "no human action",
+    "no text",
+    "no UI",
+]
+
+LEGACY_BACKGROUND_SUFFIX_VALUES = {
+    "wide establishing shot, detailed environment art, layered foreground midground background, polished anime background",
+    "atmospheric fantasy lighting, rich architecture, visible props, detailed materials, polished background art",
+    "clean cel shading, nostalgic 1990s anime color design, detailed static background plate",
+    "film lighting, realistic materials, deep composition, high detail environment concept art",
+    "strong inked shadows, dramatic contrast, moody environmental storytelling, detailed background art",
+    "strong inked shadows, dramatic contrast, visible props, detailed materials, moody background art",
+}
+
+def cleanup_visual_style_background_prompts(conn):
+    timestamp = now_ms()
+    rows = conn.execute(
+        "SELECT id, background_prompt_prefix, background_prompt_suffix FROM visual_styles"
+    ).fetchall()
+    for row in rows:
+        cleaned_prefix = clean_legacy_background_positive(row["background_prompt_prefix"])
+        cleaned_suffix = clean_legacy_background_positive(row["background_prompt_suffix"])
+        updates = {}
+        if cleaned_prefix != (row["background_prompt_prefix"] or ""):
+            updates["background_prompt_prefix"] = cleaned_prefix
+        if cleaned_suffix != (row["background_prompt_suffix"] or ""):
+            updates["background_prompt_suffix"] = cleaned_suffix
+        if not updates:
+            continue
+        sql = ", ".join([f"{field} = ?" for field in updates] + ["updated_at = ?"])
+        conn.execute(
+            f"UPDATE visual_styles SET {sql} WHERE id = ?",
+            [*updates.values(), timestamp, row["id"]],
+        )
+
+
+def clean_legacy_background_positive(value):
+    result = str(value or "").strip()
+    if not result:
+        return ""
+    if result.lower() in {item.lower() for item in LEGACY_BACKGROUND_SUFFIX_VALUES}:
+        return ""
+    for phrase in LEGACY_BACKGROUND_POSITIVE_NOISE:
+        result = re.sub(rf"\s*,?\s*{re.escape(phrase)}\s*,?", ", ", result, flags=re.I)
+    result = re.sub(r"\s*,\s*,+", ", ", result)
+    result = re.sub(r"^\s*,\s*|\s*,\s*$", "", result)
+    return " ".join(result.split())
 
 
 def list_visual_styles():
@@ -443,8 +696,13 @@ def create_visual_style(payload):
             """
             INSERT INTO visual_styles (
                 id, name, prompt_prefix, prompt_suffix, negative_prompt,
-                sprite_workbench, cover_path, advanced_settings, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sprite_workbench, background_workbench, background_prompt_prefix,
+                background_prompt_suffix, background_negative_prompt, background_settings,
+                sprite_prompt_command, sprite_prompt_example, background_prompt_command,
+                background_prompt_example, appearance_workbench, appearance_prompt_command, appearance_prompt_example,
+                expressions_enabled, expression_prompts_visible, expression_workbench,
+                expression_prompts, cover_path, advanced_settings, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 style_id,
@@ -453,6 +711,22 @@ def create_visual_style(payload):
                 data["prompt_suffix"],
                 data["negative_prompt"],
                 data["sprite_workbench"],
+                data["background_workbench"],
+                data["background_prompt_prefix"],
+                data["background_prompt_suffix"],
+                data["background_negative_prompt"],
+                json.dumps(data["background_settings"], ensure_ascii=False),
+                data["sprite_prompt_command"],
+                data["sprite_prompt_example"],
+                data["background_prompt_command"],
+                data["background_prompt_example"],
+                data["appearance_workbench"],
+                data["appearance_prompt_command"],
+                data["appearance_prompt_example"],
+                1 if data["expressions_enabled"] else 0,
+                1 if data["expression_prompts_visible"] else 0,
+                data["expression_workbench"],
+                json.dumps(data["expression_prompts"], ensure_ascii=False),
                 data["cover_path"],
                 json.dumps(data["advanced_settings"], ensure_ascii=False),
                 timestamp,
@@ -470,6 +744,22 @@ def update_visual_style(style_id, payload):
         "prompt_suffix",
         "negative_prompt",
         "sprite_workbench",
+        "background_workbench",
+        "background_prompt_prefix",
+        "background_prompt_suffix",
+        "background_negative_prompt",
+        "background_settings",
+        "sprite_prompt_command",
+        "sprite_prompt_example",
+        "background_prompt_command",
+        "background_prompt_example",
+        "appearance_workbench",
+        "appearance_prompt_command",
+        "appearance_prompt_example",
+        "expressions_enabled",
+        "expression_prompts_visible",
+        "expression_workbench",
+        "expression_prompts",
         "cover_path",
         "advanced_settings",
     ]
@@ -479,7 +769,7 @@ def update_visual_style(style_id, payload):
     timestamp = now_ms()
     sql = ", ".join([f"{field} = ?" for field in updates] + ["updated_at = ?"])
     values = [
-        json.dumps(data[field], ensure_ascii=False) if field == "advanced_settings" else data[field]
+        json.dumps(data[field], ensure_ascii=False) if field in {"advanced_settings", "background_settings", "expression_prompts"} else (1 if data[field] else 0) if field in {"expressions_enabled", "expression_prompts_visible"} else data[field]
         for field in updates
     ] + [timestamp, style_id]
     with connect() as conn:
@@ -511,10 +801,32 @@ def visual_style_for_story(story_id):
 def normalize_visual_style_payload(payload, partial=False):
     payload = payload or {}
     data = {}
-    text_fields = ["name", "prompt_prefix", "prompt_suffix", "negative_prompt", "sprite_workbench", "cover_path"]
+    text_fields = [
+        "name",
+        "prompt_prefix",
+        "prompt_suffix",
+        "negative_prompt",
+        "sprite_workbench",
+        "background_workbench",
+        "background_prompt_prefix",
+        "background_prompt_suffix",
+        "background_negative_prompt",
+        "sprite_prompt_command",
+        "sprite_prompt_example",
+        "background_prompt_command",
+        "background_prompt_example",
+        "appearance_workbench",
+        "appearance_prompt_command",
+        "appearance_prompt_example",
+        "cover_path",
+        "expression_workbench",
+    ]
     for field in text_fields:
         if field in payload:
             data[field] = str(payload.get(field) or "").strip()
+    for field in ["expressions_enabled", "expression_prompts_visible"]:
+        if field in payload:
+            data[field] = bool(payload.get(field))
     if not partial or "name" in data:
         data["name"] = data.get("name") or "Novo estilo"
     if "advanced_settings" in payload:
@@ -522,10 +834,51 @@ def normalize_visual_style_payload(payload, partial=False):
         data["advanced_settings"] = settings if isinstance(settings, dict) else {}
     elif not partial:
         data["advanced_settings"] = {}
+    if "background_settings" in payload:
+        settings = payload.get("background_settings")
+        data["background_settings"] = settings if isinstance(settings, dict) else {}
+    elif not partial:
+        data["background_settings"] = {}
+    if "expression_prompts" in payload:
+        data["expression_prompts"] = normalize_expression_prompts(payload.get("expression_prompts"))
+    elif not partial:
+        data["expression_prompts"] = {}
     if not partial:
         for field in text_fields:
             data.setdefault(field, "")
+        data.setdefault("expressions_enabled", False)
+        data.setdefault("expression_prompts_visible", False)
     return data
+
+
+def normalize_expression(value):
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in OFFICIAL_EXPRESSIONS else "neutral"
+
+
+def normalize_expression_prompts(value):
+    source = value if isinstance(value, dict) else {}
+    result = {}
+    for expression in EXPRESSION_PROMPT_KEYS:
+        prompts = source.get(expression) or []
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        clean_prompts = []
+        for index, item in enumerate(prompts):
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("prompt") or "").strip()
+                prompt_id = str(item.get("id") or "").strip()
+            else:
+                text = str(item or "").strip()
+                prompt_id = ""
+            if not text:
+                continue
+            clean_prompts.append({
+                "id": prompt_id or f"{expression}_{index + 1}",
+                "text": text,
+            })
+        result[expression] = clean_prompts
+    return result
 
 
 def update_scene(scene_id, payload):
@@ -570,6 +923,7 @@ def duplicate_story(story_id):
     timestamp = now_ms()
     new_story_id = new_id("story")
     character_map = {}
+    appearance_map = {}
     scene_map = {}
     asset_map = {}
     scene_backgrounds = {}
@@ -582,9 +936,9 @@ def duplicate_story(story_id):
         conn.execute(
             """
             INSERT INTO stories (
-                id, title, genre, tone, visual_style, content_rating, language,
+                id, title, genre, tone, visual_style, participation_mode, content_rating, language,
                 visual_style_id, status, lore, player_character, summary, current_scene_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, ?, ?)
             """,
             (
                 new_story_id,
@@ -592,6 +946,7 @@ def duplicate_story(story_id):
                 story["genre"],
                 story["tone"],
                 story["visual_style"],
+                normalize_participation_mode(story["participation_mode"] if "participation_mode" in story.keys() else ""),
                 story["content_rating"],
                 story["language"],
                 story["visual_style_id"],
@@ -611,8 +966,8 @@ def duplicate_story(story_id):
                 INSERT INTO characters (
                     id, story_id, name, species, gender, character_type, aliases, description,
                     physical, personality, clothing, role, relationship, secrets, speech_style,
-                    visual_prompt, status, importance, is_player, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    visual_prompt, expression_prompts, active_appearance_id, status, importance, is_player, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_character_id,
@@ -631,6 +986,7 @@ def duplicate_story(story_id):
                     row["secrets"],
                     row["speech_style"],
                     row["visual_prompt"],
+                    row["expression_prompts"] if "expression_prompts" in row.keys() else "{}",
                     row["status"],
                     row["importance"],
                     row["is_player"],
@@ -709,16 +1065,18 @@ def duplicate_story(story_id):
             conn.execute(
                 """
                 INSERT INTO generated_assets (
-                    id, story_id, character_id, scene_id, asset_type, expression, prompt,
+                    id, story_id, character_id, scene_id, appearance_id, asset_type, base_asset_id, expression, prompt,
                     negative_prompt, file_path, remote_ref, metadata, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_asset_id,
                     new_story_id,
                     new_character_id,
                     new_scene_id,
+                    row["appearance_id"] if "appearance_id" in row.keys() else "",
                     row["asset_type"],
+                    row["base_asset_id"] if "base_asset_id" in row.keys() else "",
                     row["expression"],
                     row["prompt"],
                     row["negative_prompt"],
@@ -729,12 +1087,68 @@ def duplicate_story(story_id):
                 ),
             )
 
+        for row in conn.execute(
+            """
+            SELECT ca.* FROM character_appearances ca
+            JOIN characters c ON c.id = ca.character_id
+            WHERE c.story_id = ?
+            ORDER BY ca.created_at ASC
+            """,
+            (story_id,),
+        ).fetchall():
+            new_character_id = character_map.get(row["character_id"])
+            if not new_character_id:
+                continue
+            new_appearance_id = new_id("appearance")
+            appearance_map[row["id"]] = new_appearance_id
+            conn.execute(
+                """
+                INSERT INTO character_appearances (
+                    id, character_id, label, primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_appearance_id,
+                    new_character_id,
+                    row["label"],
+                    asset_map.get(row["primary_asset_id"], ""),
+                    asset_map.get(row["neutral_asset_id"], ""),
+                    row["is_active"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            if row["is_active"]:
+                conn.execute(
+                    "UPDATE characters SET active_appearance_id = ? WHERE id = ?",
+                    (new_appearance_id, new_character_id),
+                )
+
         for old_scene_id, old_asset_id in scene_backgrounds.items():
             if old_asset_id and old_asset_id in asset_map:
                 conn.execute(
                     "UPDATE scenes SET background_asset_id = ? WHERE id = ?",
                     (asset_map[old_asset_id], scene_map[old_scene_id]),
                 )
+
+        for old_asset_id, new_asset_id in asset_map.items():
+            old_row = conn.execute("SELECT base_asset_id FROM generated_assets WHERE id = ?", (old_asset_id,)).fetchone()
+            old_base_id = old_row["base_asset_id"] if old_row and "base_asset_id" in old_row.keys() else ""
+            if old_base_id and old_base_id in asset_map:
+                conn.execute(
+                    "UPDATE generated_assets SET base_asset_id = ? WHERE id = ?",
+                    (asset_map[old_base_id], new_asset_id),
+                )
+            elif old_base_id == old_asset_id:
+                conn.execute(
+                    "UPDATE generated_assets SET base_asset_id = ? WHERE id = ?",
+                    (new_asset_id, new_asset_id),
+                )
+        for old_appearance_id, new_appearance_id in appearance_map.items():
+            conn.execute(
+                "UPDATE generated_assets SET appearance_id = ? WHERE story_id = ? AND appearance_id = ?",
+                (new_appearance_id, new_story_id, old_appearance_id),
+            )
 
         current_scene_id = scene_map.get(story["current_scene_id"])
         if current_scene_id:
@@ -781,6 +1195,7 @@ def sanitize_path_component(value, fallback="asset"):
 
 
 def get_story(story_id):
+    ensure_appearances_for_story(story_id)
     with connect() as conn:
         story = conn.execute("SELECT * FROM stories WHERE id = ?", (story_id,)).fetchone()
         if not story:
@@ -805,6 +1220,15 @@ def get_story(story_id):
             "SELECT * FROM generated_assets WHERE story_id = ? ORDER BY created_at DESC",
             (story_id,),
         ).fetchall()
+        appearances = conn.execute(
+            """
+            SELECT ca.* FROM character_appearances ca
+            JOIN characters c ON c.id = ca.character_id
+            WHERE c.story_id = ?
+            ORDER BY ca.created_at DESC
+            """,
+            (story_id,),
+        ).fetchall()
         style = None
         if story["visual_style_id"]:
             style = conn.execute("SELECT * FROM visual_styles WHERE id = ?", (story["visual_style_id"],)).fetchone()
@@ -815,23 +1239,76 @@ def get_story(story_id):
     data["memory_entries"] = [row_to_dict(row) for row in memory]
     data["lore_entries"] = [row_to_dict(row) for row in lore]
     data["assets"] = [serialize_asset(row) for row in assets]
+    data["appearances"] = [serialize_appearance(row) for row in appearances]
     return data
+
+
+def story_before_latest_scene_for_regeneration(story_id):
+    story = get_story(story_id)
+    if not story:
+        raise ValueError("Historia nao encontrada.")
+    scenes = story.get("scenes") or []
+    if len(scenes) <= 1:
+        raise ValueError("Nao ha cena anterior para regenerar a cena atual.")
+    current_scene = scenes[-1]
+    previous_scene = scenes[-2]
+    snapshot = copy.deepcopy(story)
+    snapshot["scenes"] = copy.deepcopy(scenes[:-1])
+    snapshot["current_scene_id"] = previous_scene.get("id")
+    snapshot["summary"] = previous_scene_summary(snapshot, previous_scene)
+    snapshot["memory_entries"] = filtered_memory_before_regenerated_scene(
+        snapshot.get("memory_entries") or [],
+        current_scene,
+    )
+    return snapshot, current_scene
+
+
+def previous_scene_summary(story, previous_scene):
+    memory_updates = previous_scene.get("memory_updates") or {}
+    if isinstance(memory_updates, dict) and memory_updates.get("summary"):
+        return memory_updates.get("summary")
+    for entry in story.get("memory_entries") or []:
+        if entry.get("entry_type") == "summary" and entry.get("content"):
+            return entry.get("content")
+    return story.get("summary") or ""
+
+
+def filtered_memory_before_regenerated_scene(memory_entries, current_scene):
+    scene_created_at = int(current_scene.get("created_at") or 0)
+    scene_updates = current_scene.get("memory_updates") or {}
+    summary = str(scene_updates.get("summary") or "") if isinstance(scene_updates, dict) else ""
+    facts = {str(fact) for fact in (scene_updates.get("facts") or [])} if isinstance(scene_updates, dict) else set()
+    filtered = []
+    for entry in memory_entries or []:
+        created_at = int(entry.get("created_at") or 0)
+        entry_type = entry.get("entry_type") or ""
+        content = str(entry.get("content") or "")
+        if scene_created_at and created_at >= scene_created_at and entry_type == "summary" and summary and content == summary:
+            continue
+        if scene_created_at and created_at >= scene_created_at and entry_type == "fact" and content in facts:
+            continue
+        filtered.append(entry)
+    return filtered
 
 
 def create_story(payload):
     timestamp = now_ms()
     story_id = new_id("story")
+    participation_mode = normalize_participation_mode(payload.get("participation_mode") or payload.get("point_of_view"))
+    payload["participation_mode"] = participation_mode
     player = payload.get("player_character") or {}
     lore = payload.get("lore") or ""
     starting_message = payload.get("starting_message") or ""
+    if participation_mode == "first_person" and isinstance(player, dict):
+        player["visual_prompt"] = ""
 
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO stories (
-                id, title, genre, tone, visual_style, content_rating, language,
+                id, title, genre, tone, visual_style, participation_mode, content_rating, language,
                 visual_style_id, status, lore, player_character, summary, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
             """,
             (
                 story_id,
@@ -839,6 +1316,7 @@ def create_story(payload):
                 payload.get("genre") or "",
                 payload.get("tone") or "",
                 payload.get("visual_style") or "",
+                participation_mode,
                 payload.get("content_rating") or "",
                 payload.get("language") or "pt-BR",
                 payload.get("visual_style_id") or "",
@@ -855,7 +1333,10 @@ def create_story(payload):
                 (new_id("lore"), story_id, "Lore inicial", lore, "world", timestamp, timestamp),
             )
         if player.get("name"):
-            insert_character(conn, story_id, player, is_player=True, importance="player")
+            if participation_mode == "narrator":
+                insert_character(conn, story_id, player, is_player=False, importance="main")
+            else:
+                insert_character(conn, story_id, player, is_player=True, importance="player")
         for character in payload.get("characters") or []:
             if character.get("name"):
                 insert_character(conn, story_id, character, is_player=False, importance="main")
@@ -875,18 +1356,20 @@ def create_story(payload):
 
 
 def build_initial_scene(payload):
+    participation_mode = normalize_participation_mode(payload.get("participation_mode") or payload.get("point_of_view"))
     player = payload.get("player_character") or {}
     characters = [player, *(payload.get("characters") or [])]
+    visual_characters = characters[1:] if participation_mode == "first_person" else characters
     starting_message = payload.get("starting_message") or ""
     starting_location = payload.get("starting_location") or ""
-    present = detect_initial_characters(characters, starting_message)
-    if not present and player.get("name"):
+    present = detect_initial_characters(visual_characters, starting_message)
+    if not present and player.get("name") and participation_mode != "first_person":
         present = [player]
     return {
         "title": starting_location or "Primeira cena",
         "scene_text": starting_message,
         "dialogues": [{"character": "Narrador", "expression": "neutral", "text": starting_message}],
-        "choices": ["Observar o ambiente", "Falar com alguem presente", "Avancar com cautela"],
+        "choices": initial_choices_for_mode(participation_mode),
         "characters_on_screen": [
             {"name": character.get("name"), "position": position_for_index(index, len(present)), "expression": "neutral"}
             for index, character in enumerate(present[:4])
@@ -895,7 +1378,7 @@ def build_initial_scene(payload):
         "background_prompt": build_initial_background_prompt(payload),
         "memory_updates": {
             "summary": compact_text(starting_message, 420),
-            "facts": [f"Local inicial: {starting_location}"] if starting_location else [],
+            "facts": ([f"Local inicial: {starting_location}"] if starting_location else []) + [f"Modo de participacao: {participation_mode}."],
         },
         "raw_ai_response": {
             "location": starting_location,
@@ -904,6 +1387,14 @@ def build_initial_scene(payload):
         },
         "user_input": "Mensagem inicial da historia",
     }
+
+
+def initial_choices_for_mode(participation_mode):
+    if participation_mode == "narrator":
+        return ["Aprofundar o conflito central", "Mudar o foco para outro personagem", "Criar uma consequencia imediata"]
+    if participation_mode == "third_person":
+        return ["Fazer o protagonista observar o ambiente", "Fazer o protagonista falar com alguem presente", "Fazer o protagonista avancar com cautela"]
+    return ["Observar o ambiente", "Falar com alguem presente", "Avancar com cautela"]
 
 
 def detect_initial_characters(characters, text):
@@ -928,19 +1419,12 @@ def position_for_index(index, total):
 
 def build_initial_background_prompt(payload):
     parts = [
-        "empty visual novel background, no people, no characters, no faces, no silhouettes, no text, no UI",
-        "no people",
-        payload.get("visual_style") or "visual novel style",
         payload.get("starting_location") or "",
         compact_text(payload.get("starting_message") or "", 260),
-        "specific architecture and spatial layout",
-        "environmental storytelling objects tied to the opening conflict",
-        "clear material textures",
-        "distinct foreground, midground, and background depth",
-        "establishing shot",
-        "cinematic atmospheric lighting",
-        "cohesive color palette",
-        "high detail polished anime visual novel background art",
+        "concrete environment description",
+        "spatial layout",
+        "foreground, midground, and background depth",
+        "visible props, materials, lighting, atmosphere, and color palette",
     ]
     return ", ".join(part for part in parts if part)
 
@@ -960,8 +1444,8 @@ def insert_character(conn, story_id, data, is_player=False, importance="secondar
         INSERT INTO characters (
             id, story_id, name, species, gender, character_type, aliases, description,
             physical, personality, clothing, role, relationship, secrets, speech_style,
-            visual_prompt, status, importance, is_player, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+            visual_prompt, expression_prompts, status, importance, is_player, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
         """,
         (
             character_id,
@@ -980,6 +1464,7 @@ def insert_character(conn, story_id, data, is_player=False, importance="secondar
             data.get("secrets") or "",
             data.get("speech_style") or "",
             data.get("visual_prompt") or "",
+            json.dumps(normalize_character_expression_prompts(data.get("expression_prompts")), ensure_ascii=False),
             importance,
             1 if is_player else 0,
             timestamp,
@@ -1047,6 +1532,97 @@ def add_scene(story_id, scene):
     return get_story(story_id)
 
 
+def replace_latest_scene(story_id, expected_scene_id, scene, previous_scene=None):
+    timestamp = now_ms()
+    with connect() as conn:
+        current = conn.execute(
+            "SELECT * FROM scenes WHERE story_id = ? ORDER BY scene_order DESC LIMIT 1",
+            (story_id,),
+        ).fetchone()
+        if not current:
+            raise ValueError("Nenhuma cena encontrada para regenerar.")
+        if expected_scene_id and current["id"] != expected_scene_id:
+            raise ValueError("A cena atual mudou antes da regeneracao terminar.")
+        if int(current["scene_order"] or 0) <= 1:
+            raise ValueError("Nao ha cena anterior para regenerar a cena atual.")
+
+        remove_scene_memory_updates(conn, story_id, serialize_scene(current))
+        conn.execute("DELETE FROM choices WHERE scene_id = ?", (current["id"],))
+        conn.execute(
+            "UPDATE generated_assets SET scene_id = '' WHERE scene_id = ? AND asset_type = 'background'",
+            (current["id"],),
+        )
+        conn.execute(
+            """
+            UPDATE scenes SET
+                title = ?,
+                scene_text = ?,
+                dialogues = ?,
+                choices = ?,
+                characters_on_screen = ?,
+                background_prompt = ?,
+                background_asset_id = NULL,
+                memory_updates = ?,
+                raw_ai_response = ?,
+                user_input = ?,
+                created_at = ?
+            WHERE id = ?
+            """,
+            (
+                scene.get("title") or f"Cena {current['scene_order']}",
+                scene.get("scene_text") or "",
+                json.dumps(scene.get("dialogues") or [], ensure_ascii=False),
+                json.dumps(scene.get("choices") or [], ensure_ascii=False),
+                json.dumps(scene.get("characters_on_screen") or [], ensure_ascii=False),
+                scene.get("background_prompt") or "",
+                json.dumps(scene.get("memory_updates") or {}, ensure_ascii=False),
+                json.dumps(scene.get("raw_ai_response") or scene, ensure_ascii=False),
+                scene.get("user_input") or "",
+                timestamp,
+                current["id"],
+            ),
+        )
+        for choice in scene.get("choices") or []:
+            conn.execute(
+                "INSERT INTO choices VALUES (?, ?, ?, ?, 0, ?)",
+                (new_id("choice"), story_id, current["id"], str(choice), timestamp),
+            )
+        apply_memory_updates(conn, story_id, scene.get("memory_updates") or {}, timestamp)
+        summary = scene.get("memory_updates", {}).get("summary")
+        if not summary and previous_scene:
+            previous_updates = previous_scene.get("memory_updates") or {}
+            summary = previous_updates.get("summary") if isinstance(previous_updates, dict) else ""
+        conn.execute(
+            "UPDATE stories SET summary = COALESCE(NULLIF(?, ''), summary), current_scene_id = ?, updated_at = ? WHERE id = ?",
+            (summary or "", current["id"], timestamp, story_id),
+        )
+    return get_story(story_id)
+
+
+def remove_scene_memory_updates(conn, story_id, scene):
+    updates = scene.get("memory_updates") or {}
+    if not isinstance(updates, dict):
+        return
+    scene_created_at = int(scene.get("created_at") or 0)
+    summary = str(updates.get("summary") or "")
+    if summary:
+        conn.execute(
+            """
+            DELETE FROM memory_entries
+            WHERE story_id = ? AND entry_type = 'summary' AND content = ? AND created_at >= ?
+            """,
+            (story_id, summary, scene_created_at),
+        )
+    for fact in updates.get("facts") or []:
+        conn.execute(
+            """
+            DELETE FROM memory_entries
+            WHERE story_id = ? AND entry_type = 'fact' AND content = ? AND created_at >= ?
+            """,
+            (story_id, str(fact), scene_created_at),
+        )
+
+
 def apply_memory_updates(conn, story_id, updates, timestamp):
     summary = updates.get("summary")
     if summary:
@@ -1074,6 +1650,48 @@ def get_character(character_id):
     return serialize_character(row)
 
 
+def normalize_character_key(value):
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def delete_character(character_id):
+    character = get_character(character_id)
+    if not character:
+        return None
+    story_id = character.get("story_id")
+    character_key = normalize_character_key(character.get("name"))
+    timestamp = now_ms()
+    with connect() as conn:
+        asset_rows = conn.execute(
+            "SELECT * FROM generated_assets WHERE character_id = ?",
+            (character_id,),
+        ).fetchall()
+        assets = [serialize_asset(row) for row in asset_rows]
+        scene_rows = conn.execute(
+            "SELECT id, characters_on_screen FROM scenes WHERE story_id = ?",
+            (story_id,),
+        ).fetchall()
+        for row in scene_rows:
+            cast = json_load(row["characters_on_screen"], [])
+            filtered = [
+                item for item in cast
+                if normalize_character_key(item.get("name") if isinstance(item, dict) else item) != character_key
+            ]
+            if filtered != cast:
+                conn.execute(
+                    "UPDATE scenes SET characters_on_screen = ? WHERE id = ?",
+                    (json.dumps(filtered, ensure_ascii=False), row["id"]),
+                )
+        conn.execute("DELETE FROM generated_assets WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM characters WHERE id = ?", (character_id,))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return {
+        "character": character,
+        "assets": assets,
+        "story": get_story(story_id),
+    }
+
+
 def update_character(character_id, payload):
     timestamp = now_ms()
     fields = [
@@ -1091,6 +1709,7 @@ def update_character(character_id, payload):
         "secrets",
         "speech_style",
         "visual_prompt",
+        "expression_prompts",
         "status",
         "importance",
     ]
@@ -1098,7 +1717,11 @@ def update_character(character_id, payload):
     if not updates:
         return get_character(character_id)
     sql = ", ".join([f"{field} = ?" for field in updates] + ["updated_at = ?"])
-    values = [payload[field] for field in updates] + [timestamp, character_id]
+    values = [
+        json.dumps(normalize_character_expression_prompts(payload[field]), ensure_ascii=False)
+        if field == "expression_prompts" else payload[field]
+        for field in updates
+    ] + [timestamp, character_id]
     with connect() as conn:
         conn.execute(f"UPDATE characters SET {sql} WHERE id = ?", values)
     return get_character(character_id)
@@ -1111,17 +1734,19 @@ def add_asset(story_id, payload):
         conn.execute(
             """
             INSERT INTO generated_assets (
-                id, story_id, character_id, scene_id, asset_type, expression, prompt,
+                id, story_id, character_id, scene_id, appearance_id, asset_type, base_asset_id, expression, prompt,
                 negative_prompt, file_path, remote_ref, metadata, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
                 story_id,
                 payload.get("character_id"),
                 payload.get("scene_id"),
+                payload.get("appearance_id") or "",
                 payload.get("asset_type") or "image",
-                payload.get("expression") or "",
+                payload.get("base_asset_id") or "",
+                normalize_expression(payload.get("expression")) if (payload.get("asset_type") or "") == "sprite" else (payload.get("expression") or ""),
                 payload.get("prompt") or "",
                 payload.get("negative_prompt") or "",
                 payload.get("file_path") or "",
@@ -1131,6 +1756,263 @@ def add_asset(story_id, payload):
             ),
         )
     return asset_id
+
+
+def update_asset_base(asset_id, base_asset_id):
+    with connect() as conn:
+        conn.execute(
+            "UPDATE generated_assets SET base_asset_id = ? WHERE id = ?",
+            (base_asset_id or "", asset_id),
+        )
+    return get_asset(asset_id)
+
+
+def create_character_appearance(character_id, label="", primary_asset_id="", neutral_asset_id="", active=True):
+    character = get_character(character_id)
+    if not character:
+        return None
+    timestamp = now_ms()
+    appearance_id = new_id("appearance")
+    with connect() as conn:
+        if active:
+            conn.execute("UPDATE character_appearances SET is_active = 0 WHERE character_id = ?", (character_id,))
+        conn.execute(
+            """
+            INSERT INTO character_appearances (
+                id, character_id, label, primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                appearance_id,
+                character_id,
+                label or "Aparencia",
+                primary_asset_id or neutral_asset_id or "",
+                neutral_asset_id or primary_asset_id or "",
+                1 if active else 0,
+                timestamp,
+                timestamp,
+            ),
+        )
+        if primary_asset_id or neutral_asset_id:
+            conn.execute(
+                "UPDATE generated_assets SET appearance_id = ? WHERE id IN (?, ?)",
+                (appearance_id, primary_asset_id or "", neutral_asset_id or ""),
+            )
+            base_id = primary_asset_id or neutral_asset_id
+            conn.execute(
+                "UPDATE generated_assets SET appearance_id = ? WHERE base_asset_id = ?",
+                (appearance_id, base_id),
+            )
+        if active:
+            conn.execute(
+                "UPDATE characters SET active_appearance_id = ?, updated_at = ? WHERE id = ?",
+                (appearance_id, timestamp, character_id),
+            )
+    return get_appearance(appearance_id)
+
+
+def get_appearance(appearance_id):
+    if not appearance_id:
+        return None
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM character_appearances WHERE id = ?", (appearance_id,)).fetchone()
+    return serialize_appearance(row)
+
+
+def is_initial_appearance(character_id, appearance_id):
+    if not character_id or not appearance_id:
+        return False
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM character_appearances
+            WHERE character_id = ?
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (character_id,),
+        ).fetchone()
+    return bool(row and row["id"] == appearance_id)
+
+
+def replace_character_appearance_asset(character_id, appearance_id, asset_id):
+    if not character_id or not appearance_id or not asset_id:
+        return None
+    timestamp = now_ms()
+    with connect() as conn:
+        appearance = conn.execute(
+            "SELECT * FROM character_appearances WHERE id = ? AND character_id = ?",
+            (appearance_id, character_id),
+        ).fetchone()
+        asset = conn.execute(
+            "SELECT * FROM generated_assets WHERE id = ? AND character_id = ? AND asset_type = 'sprite' AND file_path != ''",
+            (asset_id, character_id),
+        ).fetchone()
+        if not appearance or not asset:
+            return None
+
+        old_asset_ids = {
+            value for value in [appearance["primary_asset_id"], appearance["neutral_asset_id"]]
+            if value and value != asset_id
+        }
+        new_related_rows = conn.execute(
+            "SELECT id FROM generated_assets WHERE id = ? OR base_asset_id = ?",
+            (asset_id, asset_id),
+        ).fetchall()
+        new_related_ids = {row["id"] for row in new_related_rows}
+        old_related_ids = set()
+        if old_asset_ids:
+            placeholders = ",".join("?" for _ in old_asset_ids)
+            old_related_rows = conn.execute(
+                f"""
+                SELECT id FROM generated_assets
+                WHERE appearance_id = ?
+                   OR id IN ({placeholders})
+                   OR base_asset_id IN ({placeholders})
+                """,
+                (appearance_id, *old_asset_ids, *old_asset_ids),
+            ).fetchall()
+        else:
+            old_related_rows = conn.execute(
+                "SELECT id FROM generated_assets WHERE appearance_id = ?",
+                (appearance_id,),
+            ).fetchall()
+        old_related_ids = {row["id"] for row in old_related_rows} - new_related_ids
+
+        if old_related_ids:
+            placeholders = ",".join("?" for _ in old_related_ids)
+            conn.execute(
+                f"DELETE FROM generated_assets WHERE id IN ({placeholders})",
+                tuple(old_related_ids),
+            )
+        conn.execute(
+            "UPDATE generated_assets SET appearance_id = ?, base_asset_id = ? WHERE id = ?",
+            (appearance_id, asset_id, asset_id),
+        )
+        conn.execute(
+            "UPDATE generated_assets SET appearance_id = ? WHERE base_asset_id = ?",
+            (appearance_id, asset_id),
+        )
+        conn.execute(
+            """
+            UPDATE character_appearances
+            SET primary_asset_id = ?, neutral_asset_id = ?, updated_at = ?
+            WHERE id = ? AND character_id = ?
+            """,
+            (asset_id, asset_id, timestamp, appearance_id, character_id),
+        )
+        story_id = conn.execute("SELECT story_id FROM characters WHERE id = ?", (character_id,)).fetchone()["story_id"]
+        conn.execute("UPDATE characters SET updated_at = ? WHERE id = ?", (timestamp, character_id))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story(story_id)
+
+
+def set_active_appearance(character_id, appearance_id):
+    timestamp = now_ms()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM character_appearances WHERE id = ? AND character_id = ?",
+            (appearance_id, character_id),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute("UPDATE character_appearances SET is_active = 0 WHERE character_id = ?", (character_id,))
+        conn.execute(
+            "UPDATE character_appearances SET is_active = 1, updated_at = ? WHERE id = ?",
+            (timestamp, appearance_id),
+        )
+        conn.execute(
+            "UPDATE characters SET active_appearance_id = ?, updated_at = ? WHERE id = ?",
+            (appearance_id, timestamp, character_id),
+        )
+        story_id = conn.execute("SELECT story_id FROM characters WHERE id = ?", (character_id,)).fetchone()["story_id"]
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story(story_id)
+
+
+def ensure_appearances_for_story(story_id):
+    timestamp = now_ms()
+    with connect() as conn:
+        characters = conn.execute("SELECT id, active_appearance_id FROM characters WHERE story_id = ?", (story_id,)).fetchall()
+        for character in characters:
+            assets = conn.execute(
+                """
+                SELECT * FROM generated_assets
+                WHERE story_id = ? AND character_id = ? AND asset_type = 'sprite' AND file_path != ''
+                ORDER BY created_at ASC
+                """,
+                (story_id, character["id"]),
+            ).fetchall()
+            base_assets = [
+                row for row in assets
+                if normalize_expression(row["expression"]) == "neutral"
+                and (not row["base_asset_id"] or row["base_asset_id"] == row["id"])
+            ]
+            for index, asset in enumerate(base_assets):
+                appearance_id = asset["appearance_id"] if "appearance_id" in asset.keys() else ""
+                existing = conn.execute(
+                    "SELECT id FROM character_appearances WHERE id = ? OR primary_asset_id = ? OR neutral_asset_id = ?",
+                    (appearance_id or "", asset["id"], asset["id"]),
+                ).fetchone()
+                if existing:
+                    appearance_id = existing["id"]
+                else:
+                    appearance_id = new_id("appearance")
+                    conn.execute(
+                        """
+                        INSERT INTO character_appearances (
+                            id, character_id, label, primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                        """,
+                        (
+                            appearance_id,
+                            character["id"],
+                            "Inicial" if index == 0 else f"Aparencia {index + 1}",
+                            asset["id"],
+                            asset["id"],
+                            asset["created_at"] or timestamp,
+                            timestamp,
+                        ),
+                    )
+                conn.execute("UPDATE generated_assets SET appearance_id = ? WHERE id = ?", (appearance_id, asset["id"]))
+                conn.execute("UPDATE generated_assets SET appearance_id = ? WHERE base_asset_id = ?", (appearance_id, asset["id"]))
+
+            rows = conn.execute(
+                "SELECT id FROM character_appearances WHERE character_id = ? ORDER BY created_at DESC",
+                (character["id"],),
+            ).fetchall()
+            appearance_ids = [row["id"] for row in rows]
+            active_id = character["active_appearance_id"] if "active_appearance_id" in character.keys() else ""
+            if active_id not in appearance_ids and appearance_ids:
+                active_id = appearance_ids[0]
+                conn.execute(
+                    "UPDATE characters SET active_appearance_id = ?, updated_at = ? WHERE id = ?",
+                    (active_id, timestamp, character["id"]),
+                )
+            conn.execute("UPDATE character_appearances SET is_active = 0 WHERE character_id = ?", (character["id"],))
+            if active_id:
+                conn.execute("UPDATE character_appearances SET is_active = 1 WHERE id = ?", (active_id,))
+
+
+def add_sprite_expression_asset(base_asset, expression, file_path="", metadata=None, prompt=None, negative_prompt=None, remote_ref=None):
+    if not base_asset:
+        return None
+    return add_asset(
+        base_asset["story_id"],
+        {
+            "asset_type": "sprite",
+            "character_id": base_asset.get("character_id"),
+            "scene_id": base_asset.get("scene_id"),
+            "appearance_id": base_asset.get("appearance_id"),
+            "base_asset_id": base_asset.get("base_asset_id") or base_asset.get("id"),
+            "expression": expression,
+            "prompt": base_asset.get("prompt") if prompt is None else prompt,
+            "negative_prompt": base_asset.get("negative_prompt") if negative_prompt is None else negative_prompt,
+            "file_path": file_path,
+            "remote_ref": base_asset.get("remote_ref") if remote_ref is None else remote_ref,
+            "metadata": metadata or {},
+        },
+    )
 
 
 def set_scene_background(scene_id, asset_id):
@@ -1144,6 +2026,7 @@ def set_scene_background(scene_id, asset_id):
 def add_api_log(provider, operation, request_payload=None, response_payload=None, status="ok", error="", story_id=None):
     timestamp = now_ms()
     log_id = new_id("log")
+    provider, request_payload = normalize_ai_log_payload(provider, operation, request_payload)
     with connect() as conn:
         conn.execute(
             """
@@ -1157,14 +2040,79 @@ def add_api_log(provider, operation, request_payload=None, response_payload=None
                 story_id,
                 provider,
                 operation,
-                json.dumps(request_payload, ensure_ascii=False) if request_payload is not None else "",
-                json.dumps(response_payload, ensure_ascii=False) if response_payload is not None else "",
+                json.dumps(redact_secrets(request_payload), ensure_ascii=False) if request_payload is not None else "",
+                json.dumps(redact_secrets(response_payload), ensure_ascii=False) if response_payload is not None else "",
                 status,
-                error,
+                redact_secret_text(error),
                 timestamp,
             ),
         )
     return log_id
+
+
+def normalize_ai_log_payload(provider, operation, request_payload):
+    if provider != "ollama" or not str(operation or "").startswith("chat:"):
+        return provider, request_payload
+    settings = get_settings()
+    ai_provider = str(settings.get("ai_provider") or "ollama").strip() or "ollama"
+    payload = request_payload if isinstance(request_payload, dict) else {}
+    payload = dict(payload)
+    payload["provider"] = ai_provider
+    payload["model"] = ai_model_from_settings(settings)
+    base_url = ai_base_url_from_settings(settings)
+    if base_url:
+        payload["base_url"] = base_url
+    return ai_provider, payload
+
+
+def ai_model_from_settings(settings):
+    provider = str(settings.get("ai_provider") or "ollama").strip()
+    if provider == "openai":
+        return settings.get("openai_model") or ""
+    if provider == "openai-compatible":
+        return settings.get("openai_compatible_model") or ""
+    return settings.get("ollama_model") or ""
+
+
+def ai_base_url_from_settings(settings):
+    provider = str(settings.get("ai_provider") or "ollama").strip()
+    if provider == "openai":
+        return settings.get("openai_base_url") or ""
+    if provider == "openai-compatible":
+        return settings.get("openai_compatible_base_url") or ""
+    return settings.get("ollama_url") or ""
+
+
+def redact_secrets(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if "api_key" in lowered or lowered in {"authorization", "token", "secret", "password"}:
+                result[key] = MASKED_SECRET_VALUE if item else ""
+            else:
+                result[key] = redact_secrets(item)
+        return result
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, str):
+        return redact_secret_text(value)
+    return value
+
+
+def redact_secret_text(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        settings = get_settings()
+    except Exception:
+        settings = {}
+    for key in SECRET_SETTING_KEYS:
+        secret = settings.get(key)
+        if secret:
+            text = text.replace(str(secret), MASKED_SECRET_VALUE)
+    return text
 
 
 def list_api_logs(story_id=None, limit=100):
@@ -1220,6 +2168,24 @@ def delete_asset(asset_id):
                 "UPDATE scenes SET background_asset_id = NULL WHERE background_asset_id = ?",
                 (asset_id,),
             )
+        if asset.get("asset_type") == "sprite":
+            appearance_id = asset.get("appearance_id") or ""
+            character_id = asset.get("character_id") or ""
+            conn.execute("DELETE FROM generated_assets WHERE base_asset_id = ? AND id != ?", (asset_id, asset_id))
+            if appearance_id and (not asset.get("base_asset_id") or asset.get("base_asset_id") == asset_id):
+                conn.execute("DELETE FROM character_appearances WHERE id = ?", (appearance_id,))
+                remaining = conn.execute(
+                    "SELECT id FROM character_appearances WHERE character_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (character_id,),
+                ).fetchone()
+                next_id = remaining["id"] if remaining else ""
+                if next_id:
+                    conn.execute("UPDATE character_appearances SET is_active = 0 WHERE character_id = ?", (character_id,))
+                    conn.execute("UPDATE character_appearances SET is_active = 1 WHERE id = ?", (next_id,))
+                conn.execute(
+                    "UPDATE characters SET active_appearance_id = ? WHERE id = ?",
+                    (next_id, character_id),
+                )
         conn.execute("DELETE FROM generated_assets WHERE id = ?", (asset_id,))
     return asset
 
@@ -1229,6 +2195,7 @@ def serialize_story(row):
     if not data:
         return None
     data["player_character"] = json_load(data.get("player_character"), {})
+    data["participation_mode"] = normalize_participation_mode(data.get("participation_mode"))
     data["main_characters"] = data.get("main_characters") or ""
     data["scene_count"] = data.get("scene_count") or 0
     data["character_count"] = data.get("character_count") or 0
@@ -1241,12 +2208,37 @@ def serialize_visual_style(row):
     if not data:
         return None
     data["advanced_settings"] = json_load(data.get("advanced_settings"), {})
+    data["background_settings"] = json_load(data.get("background_settings"), {})
+    data["expressions_enabled"] = bool(data.get("expressions_enabled"))
+    data["expression_prompts_visible"] = bool(data.get("expression_prompts_visible"))
+    data["expression_prompts"] = normalize_expression_prompts(json_load(data.get("expression_prompts"), {}))
     data["cover_url"] = f"/api/visual-styles/{data['id']}/cover?v={data.get('updated_at') or 0}" if data.get("cover_path") else ""
     return data
 
 
 def serialize_character(row):
-    return row_to_dict(row)
+    data = row_to_dict(row)
+    if data:
+        data["expression_prompts"] = normalize_character_expression_prompts(json_load(data.get("expression_prompts"), {}))
+    return data
+
+
+def normalize_character_expression_prompts(value):
+    if isinstance(value, str):
+        value = json_load(value, {})
+    source = value if isinstance(value, dict) else {}
+    return {
+        expression: str(source.get(expression) or "").strip()
+        for expression in EXPRESSION_PROMPT_KEYS
+    }
+
+
+def serialize_appearance(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["is_active"] = bool(data.get("is_active"))
+    return data
 
 
 def serialize_scene(row):
@@ -1265,6 +2257,10 @@ def serialize_asset(row):
     data = row_to_dict(row)
     if not data:
         return None
+    if data.get("asset_type") == "sprite":
+        data["expression"] = normalize_expression(data.get("expression"))
+        data["base_asset_id"] = data.get("base_asset_id") or ""
+        data["appearance_id"] = data.get("appearance_id") or ""
     data["metadata"] = json_load(data.get("metadata"), {})
     data["url"] = f"/api/assets/{data['id']}/file" if data.get("file_path") else ""
     return data

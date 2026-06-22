@@ -25,6 +25,13 @@ OFFICIAL_EXPRESSIONS = ["neutral", "happy", "sad", "angry", "thoughtful", "surpr
 SPRITE_EXPRESSION_KEYS = [item for item in OFFICIAL_EXPRESSIONS if item != "neutral"]
 
 
+class MissingStoryReferenceError(ValueError):
+    def __init__(self, reference_name, clean_user_input):
+        self.reference_name = reference_name
+        self.clean_user_input = clean_user_input
+        super().__init__(f'A referencia "{reference_name}" nao existe nesta historia.')
+
+
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "TaleWeaver/0.1"
 
@@ -70,6 +77,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_json(comfy_client.get_object_info(settings.get("comfy_url"), node_name))
             if path == "/api/stories":
                 return self.send_json({"stories": db.list_stories()})
+            if path.startswith("/api/stories/") and path.endswith("/references"):
+                story_id = path.strip("/").split("/")[2]
+                if not db.get_story(story_id):
+                    return self.send_error_json(404, "Historia nao encontrada.")
+                return self.send_json({"references": db.list_story_references(story_id)})
+            if path.startswith("/api/story-references/") and path.endswith("/file"):
+                reference_id = path.strip("/").split("/")[2]
+                return self.serve_story_reference(reference_id)
             if path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
                 story = db.get_story(story_id)
@@ -89,6 +104,7 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
         payload = {} if self.is_multipart() else self.read_json()
 
         try:
@@ -112,6 +128,23 @@ class AppHandler(BaseHTTPRequestHandler):
             if path == "/api/stories":
                 service_manager.activate_text_ai_role("story", db.get_settings())
                 return self.send_json(db.create_story(narrative.enrich_story_creation_payload(payload)), 201)
+            if path.startswith("/api/stories/") and "/scenarios" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "stories"] and parts[3] == "scenarios":
+                    return self.generate_story_scenario(parts[2], payload)
+                if len(parts) == 5 and parts[:2] == ["api", "stories"] and parts[3:] == ["scenarios", "finalize"]:
+                    return self.finalize_story_scenario(parts[2], payload)
+                if len(parts) == 6 and parts[:2] == ["api", "stories"] and parts[3] == "scenarios":
+                    if parts[5] == "regenerate":
+                        return self.regenerate_story_scenario(parts[2], parts[4], payload)
+                    if parts[5] == "replace":
+                        return self.replace_story_scenario(parts[2], parts[4], payload)
+                    if parts[5] == "activate":
+                        return self.activate_story_scenario(parts[2], parts[4])
+            if path.startswith("/api/stories/") and path.endswith("/references"):
+                story_id = path.strip("/").split("/")[2]
+                requested_name = (query.get("name") or [""])[0]
+                return self.upload_story_reference(story_id, requested_name)
             if path.endswith("/expression-prompts") and path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
                 service_manager.activate_text_ai_role("story", db.get_settings())
@@ -131,9 +164,25 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_json(story, 201)
             if path.endswith("/generate-scene") and path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
+                try:
+                    appearance_reference = self.story_reference_for_payload(story_id, payload)
+                except MissingStoryReferenceError as exc:
+                    return self.send_json({
+                        "error": str(exc),
+                        "code": "story_reference_missing",
+                        "reference_name": exc.reference_name,
+                        "clean_user_input": exc.clean_user_input,
+                    }, 409)
+                except ValueError as exc:
+                    return self.send_error_json(400, str(exc))
                 service_manager.activate_text_ai_role("scene", db.get_settings())
-                story = narrative.generate_scene(story_id, payload.get("user_input") or "", payload.get("speaker_focus"))
-                story = self.apply_scene_appearance_updates(story_id, story)
+                story = narrative.generate_scene(
+                    story_id,
+                    payload.get("user_input") or "",
+                    payload.get("speaker_focus"),
+                    appearance_reference=appearance_reference,
+                )
+                story = self.apply_scene_appearance_updates(story_id, story, appearance_reference)
                 if payload.get("generate_images") is False:
                     story["auto_background"] = {"mode": "skipped"}
                 else:
@@ -184,12 +233,10 @@ class AppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/characters/") and path.endswith("/appearances"):
                 parts = path.strip("/").split("/")
                 if len(parts) == 4:
-                    service_manager.activate_text_ai_role("story", db.get_settings())
                     return self.generate_character_appearance(parts[2], payload)
             if path.startswith("/api/characters/") and "/appearances/" in path:
                 parts = path.strip("/").split("/")
                 if len(parts) == 6 and parts[:2] == ["api", "characters"] and parts[3] == "appearances" and parts[5] == "regenerate":
-                    service_manager.activate_text_ai_role("story", db.get_settings())
                     return self.regenerate_character_appearance(parts[2], parts[4], payload)
                 if len(parts) == 6 and parts[:2] == ["api", "characters"] and parts[3] == "appearances" and parts[5] == "replace":
                     return self.replace_regenerated_appearance(parts[2], parts[4], payload)
@@ -232,6 +279,14 @@ class AppHandler(BaseHTTPRequestHandler):
         payload = self.read_json()
 
         try:
+            if len(parts) == 3 and parts[:2] == ["api", "story-references"]:
+                label = str(payload.get("label") or "").strip()
+                if not valid_story_reference_name(label):
+                    return self.send_error_json(400, "Use apenas letras, numeros, espacos, underline e hifen no nome da referencia.")
+                reference = db.rename_story_reference(parts[2], label)
+                if not reference:
+                    return self.send_error_json(404, "Referencia nao encontrada.")
+                return self.send_json(reference)
             if len(parts) == 3 and parts[:2] == ["api", "stories"]:
                 story = db.update_story(parts[2], payload)
                 if not story:
@@ -287,8 +342,12 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             if len(parts) == 3 and parts[:2] == ["api", "stories"]:
                 return self.delete_story(parts[2])
+            if len(parts) == 5 and parts[:2] == ["api", "stories"] and parts[3] == "scenarios":
+                return self.delete_story_scenario(parts[2], parts[4])
             if len(parts) == 3 and parts[:2] == ["api", "assets"]:
                 return self.delete_asset(parts[2])
+            if len(parts) == 3 and parts[:2] == ["api", "story-references"]:
+                return self.delete_story_reference(parts[2])
             if len(parts) == 3 and parts[:2] == ["api", "characters"]:
                 return self.delete_character(parts[2])
             if len(parts) == 3 and parts[:2] == ["api", "memory"]:
@@ -361,6 +420,63 @@ class AppHandler(BaseHTTPRequestHandler):
 
         updated = db.update_visual_style(style_id, {"cover_path": relative_path.as_posix()})
         return self.send_json(updated)
+
+    def upload_story_reference(self, story_id, requested_name=""):
+        if not db.get_story(story_id):
+            return self.send_error_json(404, "Historia nao encontrada.")
+        upload = self.read_multipart_file("image")
+        if not upload or not upload.get("body"):
+            return self.send_error_json(400, "Imagem nao enviada.")
+        if len(upload["body"]) > 20 * 1024 * 1024:
+            return self.send_error_json(400, "A imagem deve ter no maximo 20 MB.")
+        original_name = upload.get("filename") or "reference.png"
+        logical_name = str(requested_name or Path(original_name).stem or "Referencia").strip()
+        if requested_name and not valid_story_reference_name(logical_name):
+            return self.send_error_json(400, "Use apenas letras, numeros, espacos, underline e hifen no nome da referencia.")
+        if db.find_story_reference_by_label(story_id, logical_name):
+            return self.send_error_json(409, f'A referencia "{logical_name}" ja existe.')
+        extension = Path(original_name).suffix.lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            return self.send_error_json(400, "Use uma imagem PNG, JPG ou WebP.")
+        reference_id = db.new_id("reference")
+        folder = STORIES_DIR / story_id / "references"
+        folder.mkdir(parents=True, exist_ok=True)
+        relative_path = folder.relative_to(ROOT_DIR) / f"{reference_id}{extension}"
+        target = ROOT_DIR / relative_path
+        target.write_bytes(upload["body"])
+        reference = db.add_story_reference(story_id, logical_name, relative_path.as_posix())
+        if not reference:
+            target.unlink(missing_ok=True)
+            return self.send_error_json(404, "Historia nao encontrada.")
+        return self.send_json(reference, 201)
+
+    def serve_story_reference(self, reference_id):
+        reference = db.get_story_reference(reference_id)
+        if not reference:
+            return self.send_error_json(404, "Referencia nao encontrada.")
+        target = (ROOT_DIR / reference["file_path"]).resolve()
+        references_root = (STORIES_DIR / reference["story_id"] / "references").resolve()
+        if not is_relative_to(target, references_root) or not target.exists() or not target.is_file():
+            return self.send_error_json(404, "Arquivo da referencia nao encontrado.")
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def delete_story_reference(self, reference_id):
+        reference = db.delete_story_reference(reference_id)
+        if not reference:
+            return self.send_error_json(404, "Referencia nao encontrada.")
+        target = (ROOT_DIR / reference.get("file_path", "")).resolve()
+        references_root = (STORIES_DIR / reference["story_id"] / "references").resolve()
+        deleted = False
+        delete_error = ""
+        if is_relative_to(target, references_root) and target.exists() and target.is_file():
+            deleted, delete_error = delete_path_with_retries(target)
+        return self.send_json({"deleted": True, "reference": reference, "file_deleted": deleted, "delete_error": delete_error})
 
     def serve_visual_style_cover(self, style_id):
         style = db.get_visual_style(style_id)
@@ -588,6 +704,187 @@ class AppHandler(BaseHTTPRequestHandler):
                 service_manager.end_comfy_generation(comfy_token, settings=settings, reason="queue-failed")
         return self.send_json({"asset_id": asset_id, "queued": result})
 
+    def generate_story_scenario(self, story_id, payload):
+        story = db.get_story(story_id)
+        if not story:
+            return self.send_error_json(404, "Historia nao encontrada.")
+        name = str(payload.get("name") or "").strip()
+        description = str(payload.get("description") or "").strip()
+        if not name:
+            return self.send_error_json(400, "Informe o nome do cenario.")
+        if not description:
+            return self.send_error_json(400, "Informe a descricao do cenario.")
+        if db.find_story_scenario_by_name(story_id, name):
+            return self.send_error_json(409, "Ja existe um cenario com esse nome nesta historia.")
+        manual_prompt = bool(payload.get("manual_prompt"))
+        source_prompt = str(payload.get("prompt") or "").strip() if manual_prompt else f"{name}. {description}"
+        if manual_prompt and not source_prompt:
+            return self.send_error_json(400, "Informe o prompt manual do cenario.")
+        queued = self.queue_story_scenario_image(story_id, source_prompt, bool(payload.get("improve_prompt")), "create")
+        return self.send_json({**queued, "name": name, "description": description})
+
+    def finalize_story_scenario(self, story_id, payload):
+        asset = self.ready_story_scenario_asset(story_id, payload.get("asset_id"))
+        if not asset:
+            return self.send_error_json(400, "A imagem do novo cenario ainda nao esta pronta.")
+        metadata = asset.get("metadata") or {}
+        scenario = db.create_story_scenario(
+            story_id,
+            {
+                "name": str(payload.get("name") or "").strip(),
+                "description": str(payload.get("description") or "").strip(),
+                "prompt": metadata.get("scenario_source_prompt") or metadata.get("source_prompt") or "",
+                "enhanced_prompt": metadata.get("scenario_enhanced_prompt") or "",
+                "asset_id": asset["id"],
+            },
+            active=False,
+        )
+        if not scenario:
+            return self.send_error_json(400, "Nao foi possivel salvar o cenario.")
+        return self.send_json({"scenario": scenario, "story": db.get_story(story_id)}, 201)
+
+    def regenerate_story_scenario(self, story_id, scenario_id, payload):
+        scenario = db.get_story_scenario(scenario_id)
+        if not scenario or scenario.get("story_id") != story_id:
+            return self.send_error_json(404, "Cenario nao encontrado.")
+        change_prompt = bool(payload.get("change_prompt"))
+        improve_prompt = bool(payload.get("improve_prompt"))
+        if change_prompt:
+            source_prompt = str(payload.get("prompt") or "").strip()
+            if not source_prompt:
+                return self.send_error_json(400, "Informe o novo prompt do cenario.")
+            queued = self.queue_story_scenario_image(story_id, source_prompt, improve_prompt, "regenerate")
+        elif scenario.get("enhanced_prompt"):
+            queued = self.queue_story_scenario_image(
+                story_id,
+                scenario.get("prompt") or scenario.get("description") or scenario.get("name"),
+                False,
+                "regenerate",
+                final_prompt=scenario.get("enhanced_prompt"),
+                saved_enhanced_prompt=scenario.get("enhanced_prompt"),
+            )
+        else:
+            queued = self.queue_story_scenario_image(
+                story_id,
+                scenario.get("prompt") or scenario.get("description") or scenario.get("name"),
+                improve_prompt,
+                "regenerate",
+            )
+        return self.send_json(queued)
+
+    def replace_story_scenario(self, story_id, scenario_id, payload):
+        asset = self.ready_story_scenario_asset(story_id, payload.get("asset_id"))
+        if not asset:
+            return self.send_error_json(400, "A nova imagem do cenario ainda nao esta pronta.")
+        metadata = asset.get("metadata") or {}
+        result = db.replace_story_scenario_asset(
+            story_id,
+            scenario_id,
+            asset["id"],
+            metadata.get("scenario_source_prompt") or metadata.get("source_prompt") or "",
+            metadata.get("scenario_enhanced_prompt") or "",
+        )
+        if not result:
+            return self.send_error_json(404, "Cenario nao encontrado.")
+        old_asset_id = result.get("old_asset_id") or ""
+        if old_asset_id and old_asset_id != asset["id"] and not db.asset_is_referenced(old_asset_id):
+            self.remove_scenario_asset(old_asset_id)
+        return self.send_json(result["story"])
+
+    def activate_story_scenario(self, story_id, scenario_id):
+        story = db.activate_story_scenario(story_id, scenario_id)
+        if not story:
+            return self.send_error_json(400, "O cenario selecionado ainda nao possui uma imagem valida.")
+        return self.send_json(story)
+
+    def delete_story_scenario(self, story_id, scenario_id):
+        result = db.delete_story_scenario(story_id, scenario_id)
+        if not result:
+            return self.send_error_json(404, "Cenario nao encontrado.")
+        asset_id = (result.get("scenario") or {}).get("asset_id") or ""
+        if result.get("asset_deletable") and asset_id:
+            self.remove_scenario_asset(asset_id)
+        return self.send_json({"deleted": True, **result})
+
+    def remove_scenario_asset(self, asset_id):
+        asset = db.get_asset(asset_id)
+        file_path = (asset or {}).get("file_path") or ""
+        if file_path:
+            target = (ROOT_DIR / file_path).resolve()
+            if is_relative_to(target, (ROOT_DIR / "data").resolve()) and target.exists() and target.is_file():
+                delete_path_with_retries(target)
+        if asset:
+            db.delete_asset(asset_id)
+
+    def ready_story_scenario_asset(self, story_id, asset_id):
+        asset = db.get_asset(str(asset_id or ""))
+        if not asset or asset.get("story_id") != story_id or asset.get("asset_type") != "background" or not background_asset_is_ready(asset):
+            return None
+        return asset
+
+    def queue_story_scenario_image(self, story_id, source_prompt, improve_prompt, operation, final_prompt="", saved_enhanced_prompt=""):
+        settings = db.get_settings()
+        visual_style = db.visual_style_for_story(story_id)
+        background_settings = (visual_style or {}).get("background_settings") or {}
+        workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background")
+        normalized_prompt = narrative.normalize_background_visual_prompt(source_prompt)
+        if not normalized_prompt:
+            raise ValueError("Prompt de cenario vazio.")
+        enhanced_prompt = saved_enhanced_prompt
+        visual_prompt = str(final_prompt or "").strip()
+        if not visual_prompt:
+            visual_prompt = normalized_prompt
+            if improve_prompt:
+                profile = prompt_profile_for_visual_style(settings, visual_style, "background", workbench_id)
+                if profile:
+                    service_manager.activate_text_ai_role("story", settings)
+                    visual_prompt = narrative.generate_workbench_visual_prompt(
+                        source_prompt, "background", workbench_id, profile, normalized_prompt, story_id=story_id, ai_role="story"
+                    )
+                    enhanced_prompt = visual_prompt
+            visual_prompt = narrative.finalize_background_comfy_prompt(apply_background_style_prompt(visual_style, visual_prompt))
+            if improve_prompt:
+                enhanced_prompt = visual_prompt
+        width = int(background_settings.get("width") or settings.get("image_width") or 1024)
+        height = int(background_settings.get("height") or settings.get("image_height") or 576)
+        steps = int(background_settings.get("steps") or settings.get("background_steps") or 28)
+        cfg = float(background_settings.get("cfg") or settings.get("background_cfg") or 6.5)
+        sampler = background_settings.get("sampler_name") or settings.get("comfy_sampler")
+        scheduler = background_settings.get("scheduler") or settings.get("comfy_scheduler")
+        checkpoint = background_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
+        negative_prompt = background_negative_prompt(visual_style)
+        allowed = generation_override_fields_for_workbench(settings, workbench_id)
+        overrides = ensure_generation_seed_override(generation_overrides_for_style(background_settings, allowed_fields=allowed), allowed)
+        preserve = not bool((visual_style and background_settings) or overrides)
+        token = service_manager.begin_comfy_generation(settings, reason=f"scenario:{operation}")
+        try:
+            result, workbench_id = self.queue_comfy_image(
+                settings, "background", visual_prompt, width, height, checkpoint, steps, cfg,
+                sampler, scheduler, workbench_id, negative_prompt, preserve, overrides,
+            )
+            asset_id = db.add_asset(
+                story_id,
+                {
+                    "asset_type": "background",
+                    "prompt": visual_prompt,
+                    "negative_prompt": negative_prompt,
+                    "remote_ref": result.get("prompt_id", ""),
+                    "metadata": {
+                        "scenario_pending": operation,
+                        "scenario_source_prompt": source_prompt,
+                        "scenario_enhanced_prompt": enhanced_prompt,
+                        "workbench": workbench_id,
+                        "visual_style_id": (visual_style or {}).get("id") or "",
+                        **result,
+                    },
+                },
+            )
+            service_manager.attach_comfy_generation(token, asset_id=asset_id, prompt_id=result.get("prompt_id", ""))
+            token = None
+            return {"asset_id": asset_id, "queued": result}
+        finally:
+            if token:
+                service_manager.end_comfy_generation(token, settings=settings, reason="queue-failed")
     def generate_character_image_prompt(self, character_id, payload):
         character = db.get_character(character_id)
         if not character:
@@ -641,22 +938,29 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.send_error_json(400, "Descreva o que mudar na aparencia.")
         reference_asset_id = payload.get("reference_asset_id") or ""
         reference_asset = db.get_asset(reference_asset_id)
-        if not reference_asset or reference_asset.get("asset_type") != "sprite" or not reference_asset.get("file_path"):
+        if not reference_asset or reference_asset.get("story_id") != character.get("story_id") or reference_asset.get("asset_type") != "sprite" or not reference_asset.get("file_path"):
             return self.send_error_json(400, "Sprite de referencia invalido ou ainda sem arquivo local.")
+
+        additional_reference_id = str(payload.get("additional_reference_id") or "").strip()
+        additional_reference = db.get_story_reference(additional_reference_id) if additional_reference_id else None
+        if additional_reference_id and (not additional_reference or additional_reference.get("story_id") != character.get("story_id")):
+            return self.send_error_json(400, "Referencia adicional invalida para esta historia.")
 
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(character.get("story_id"))
-        workbench_id = payload.get("workbench") or style_workbench(visual_style, "appearance")
+        workbench_type = "appearance_reference" if additional_reference else "appearance"
+        workbench_id = payload.get("workbench") or style_workbench(visual_style, workbench_type)
         if not workbench_id:
             return self.send_error_json(400, "Configure o Workflow de Alterar Aparencia no estilo atual.")
 
         prompt = source_prompt
         prompt_source = "user"
         prompt_profile = {
-            "style": (visual_style or {}).get("appearance_prompt_command") or "",
-            "example": (visual_style or {}).get("appearance_prompt_example") or "",
+            "style": (visual_style or {}).get("appearance_reference_prompt_command" if additional_reference else "appearance_prompt_command") or "",
+            "example": (visual_style or {}).get("appearance_reference_prompt_example" if additional_reference else "appearance_prompt_example") or "",
         }
         if payload.get("improve_prompt") and prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
+            service_manager.activate_text_ai_role("story", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt,
                 "appearance",
@@ -682,6 +986,7 @@ class AppHandler(BaseHTTPRequestHandler):
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
+        additional_reference_path = (ROOT_DIR / additional_reference["file_path"]).resolve() if additional_reference else None
         comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance")
         try:
             result, workbench_id = self.queue_comfy_image(
@@ -700,6 +1005,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 preserve_workbench_settings,
                 generation_overrides,
                 reference_path,
+                None,
+                additional_reference_path,
             )
             asset_id = db.add_asset(
                 character.get("story_id"),
@@ -715,6 +1022,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "appearance_generation": True,
                         "expression_group": bool(style_expressions_enabled(visual_style)),
                         "reference_asset_id": reference_asset_id,
+                        "additional_reference_id": additional_reference_id,
                         "workbench": workbench_id,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
@@ -739,6 +1047,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 {
                     "character_id": character_id,
                     "reference_asset_id": reference_asset_id,
+                    "additional_reference_id": additional_reference_id,
                     "workbench": workbench_id,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
@@ -753,7 +1062,7 @@ class AppHandler(BaseHTTPRequestHandler):
             db.add_api_log(
                 "comfyui",
                 "prompt:appearance-generate",
-                {"character_id": character_id, "reference_asset_id": reference_asset_id, "workbench": workbench_id, "prompt": prompt},
+                {"character_id": character_id, "reference_asset_id": reference_asset_id, "additional_reference_id": additional_reference_id, "workbench": workbench_id, "prompt": prompt},
                 status="error",
                 error=str(exc),
                 story_id=character.get("story_id"),
@@ -785,16 +1094,26 @@ class AppHandler(BaseHTTPRequestHandler):
         if not reference_asset or reference_asset.get("asset_type") != "sprite" or not reference_asset.get("file_path"):
             return self.send_error_json(400, "Aparencia de referencia invalida ou ainda sem imagem local.")
 
+        additional_reference_id = str(payload.get("additional_reference_id") or "").strip()
+        additional_reference = db.get_story_reference(additional_reference_id) if additional_reference_id else None
+        if additional_reference_id and (not additional_reference or additional_reference.get("story_id") != character.get("story_id")):
+            return self.send_error_json(400, "Referencia adicional invalida para esta historia.")
+
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(character.get("story_id"))
-        workbench_id = payload.get("workbench") or style_workbench(visual_style, "appearance")
+        workbench_type = "appearance_reference" if additional_reference else "appearance"
+        workbench_id = payload.get("workbench") or style_workbench(visual_style, workbench_type)
         if not workbench_id:
             return self.send_error_json(400, "Configure o Workflow de Alterar Aparencia no estilo atual.")
 
         prompt = source_prompt
         prompt_source = "user"
-        prompt_profile = prompt_profile_for_visual_style(settings, visual_style, "appearance", workbench_id)
+        prompt_profile = {
+            "style": (visual_style or {}).get("appearance_reference_prompt_command" if additional_reference else "appearance_prompt_command") or "",
+            "example": (visual_style or {}).get("appearance_reference_prompt_example" if additional_reference else "appearance_prompt_example") or "",
+        }
         if payload.get("improve_prompt") and prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
+            service_manager.activate_text_ai_role("story", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt,
                 "appearance",
@@ -820,6 +1139,7 @@ class AppHandler(BaseHTTPRequestHandler):
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
+        additional_reference_path = (ROOT_DIR / additional_reference["file_path"]).resolve() if additional_reference else None
         comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-replace")
         try:
             result, resolved_workbench_id = self.queue_comfy_image(
@@ -838,6 +1158,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 preserve_workbench_settings,
                 generation_overrides,
                 reference_path,
+                None,
+                additional_reference_path,
             )
             asset_id = db.add_asset(
                 character.get("story_id"),
@@ -856,6 +1178,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "expression_group": bool(style_expressions_enabled(visual_style)),
                         "reference_asset_id": reference_asset_id,
                         "reference_appearance_id": reference_appearance_id,
+                        "additional_reference_id": additional_reference_id,
                         "target_appearance_id": target_appearance_id,
                         "workbench": resolved_workbench_id,
                         "visual_style_id": (visual_style or {}).get("id") or "",
@@ -877,6 +1200,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "target_appearance_id": target_appearance_id,
                     "reference_appearance_id": reference_appearance_id,
                     "reference_asset_id": reference_asset_id,
+                    "additional_reference_id": additional_reference_id,
                     "workbench": resolved_workbench_id,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
@@ -891,7 +1215,7 @@ class AppHandler(BaseHTTPRequestHandler):
             db.add_api_log(
                 "comfyui",
                 "prompt:appearance-replace",
-                {"character_id": character_id, "target_appearance_id": target_appearance_id, "reference_appearance_id": reference_appearance_id, "workbench": workbench_id, "prompt": prompt},
+                {"character_id": character_id, "target_appearance_id": target_appearance_id, "reference_appearance_id": reference_appearance_id, "additional_reference_id": additional_reference_id, "workbench": workbench_id, "prompt": prompt},
                 status="error",
                 error=str(exc),
                 story_id=character.get("story_id"),
@@ -923,16 +1247,71 @@ class AppHandler(BaseHTTPRequestHandler):
         )
         return self.send_json(story)
 
-    def apply_scene_appearance_updates(self, story_id, story):
+    def story_reference_for_payload(self, story_id, payload):
+        reference_id = str((payload or {}).get("appearance_reference_id") or "").strip()
+        reference_name = str((payload or {}).get("appearance_reference_name") or "").strip()
+        user_input = str((payload or {}).get("user_input") or "")
+        markers = story_reference_markers(user_input)
+        reference_from_marker = False
+        if markers:
+            marker_name = markers[0]["name"]
+            payload["user_input"] = remove_story_reference_markers(user_input, markers)
+            if not reference_id and not reference_name:
+                reference_name = marker_name
+                reference_from_marker = True
+        if not reference_id and not reference_name:
+            return None
+        reference = db.get_story_reference(reference_id) if reference_id else db.find_story_reference_by_label(story_id, reference_name)
+        if not reference or reference.get("story_id") != story_id:
+            if reference_from_marker:
+                raise MissingStoryReferenceError(reference_name, payload.get("user_input") or "")
+            raise ValueError(f'A referencia "{reference_name or reference_id}" nao existe nesta historia.')
+        if reference_name and db.normalize_story_reference_label(reference.get("label")) != db.normalize_story_reference_label(reference_name):
+            raise ValueError(f'A referencia "{reference_name}" nao corresponde a imagem selecionada.')
+        if not reference.get("file_path") or not (ROOT_DIR / reference["file_path"]).resolve().is_file():
+            raise ValueError(f'A imagem da referencia "{reference.get("label")}" nao esta disponivel.')
+        return {"id": reference["id"], "name": reference["label"], "file_path": reference["file_path"]}
+
+    def apply_scene_appearance_updates(self, story_id, story, appearance_reference=None):
         scene = latest_scene(story)
         updates = normalized_scene_appearance_updates(story, scene)
         if not updates:
+            if appearance_reference:
+                raise ValueError(
+                    f'A IA nao criou uma alteracao de aparencia para a referencia "{appearance_reference.get("name")}".'
+                )
             return story
-        results = []
-        for update in updates:
+        updates = self.bind_story_reference_to_appearance_updates(updates, appearance_reference)
+        prepared = {}
+        preparation_errors = {}
+        for index, update in enumerate(updates):
+            if update.get("action") != "create_new":
+                continue
+            character = story_character_for_update(story, update.get("character"))
+            if not character:
+                continue
             try:
-                results.append(self.apply_single_appearance_update(story_id, story, scene, update))
+                prepared[index] = self.prepare_appearance_update_generation(story_id, update)
             except Exception as exc:
+                preparation_errors[index] = exc
+
+        results = []
+        settings = db.get_settings()
+        for index, update in enumerate(updates):
+            result = None
+            try:
+                if index in preparation_errors:
+                    raise preparation_errors[index]
+                result = self.apply_single_appearance_update(story_id, story, scene, update, prepared.get(index))
+                if result.get("mode") == "create_new" and result.get("prompt_id"):
+                    self.wait_for_comfy_prompt_completion(settings, result["prompt_id"])
+                results.append(result)
+            except Exception as exc:
+                if result and result.get("mode") == "create_new" and result.get("asset_id"):
+                    db.delete_asset(result["asset_id"])
+                    service_manager.end_comfy_generation(
+                        asset_id=result["asset_id"], settings=settings, reason="appearance-update-failed"
+                    )
                 results.append({"mode": "error", "error": str(exc), "update": update})
                 db.add_api_log(
                     "local",
@@ -953,25 +1332,67 @@ class AppHandler(BaseHTTPRequestHandler):
         updated_story["appearance_update_results"] = {"results": results}
         return updated_story
 
+    def bind_story_reference_to_appearance_updates(self, updates, appearance_reference):
+        if not appearance_reference:
+            return updates
+        creates = [item for item in updates if item.get("action") == "create_new"]
+        if not creates:
+            raise ValueError(
+                f'A IA nao associou a referencia "{appearance_reference.get("name")}" a uma nova aparencia.'
+            )
+        selected_name = db.normalize_story_reference_label(appearance_reference.get("name"))
+        explicit = [
+            item for item in creates
+            if db.normalize_story_reference_label(item.get("reference_name")) == selected_name
+        ]
+        if not explicit and len(creates) == 1 and not creates[0].get("reference_name"):
+            explicit = creates
+        for update in explicit:
+            update["_story_reference_id"] = appearance_reference.get("id")
+            update["reference_name"] = appearance_reference.get("name")
+        if not explicit:
+            message = (
+                f'A referencia "{appearance_reference.get("name")}" nao foi associada de forma inequivoca '
+                "a um personagem pela IA."
+            )
+            for update in creates:
+                update["_reference_resolution_error"] = message
+        return updates
+
     def regenerate_current_scene(self, story_id, payload):
         try:
             previous_story, current_scene = db.story_before_latest_scene_for_regeneration(story_id)
         except ValueError as exc:
             return self.send_error_json(400, str(exc))
         has_custom_input = "user_input" in payload
-        user_input = str(payload.get("user_input") if has_custom_input else current_scene.get("user_input") or "")
+        if not has_custom_input:
+            payload["user_input"] = current_scene.get("user_input") or ""
+        user_input = str(payload.get("user_input") or "")
         if has_custom_input and not user_input.strip():
             return self.send_error_json(400, "Digite um novo input antes de regenerar.")
+        try:
+            appearance_reference = self.story_reference_for_payload(story_id, payload)
+        except MissingStoryReferenceError as exc:
+            return self.send_json({
+                "error": str(exc),
+                "code": "story_reference_missing",
+                "reference_name": exc.reference_name,
+                "clean_user_input": exc.clean_user_input,
+            }, 409)
+        except ValueError as exc:
+            return self.send_error_json(400, str(exc))
+        user_input = str(payload.get("user_input") or "")
         generated_scene = narrative.generate_scene(
             story_id,
             user_input,
             payload.get("speaker_focus"),
             story_override=previous_story,
             save=False,
+            appearance_reference=appearance_reference,
         )
         previous_scene = (previous_story.get("scenes") or [])[-1] if previous_story.get("scenes") else None
         story = db.replace_latest_scene(story_id, current_scene.get("id"), generated_scene, previous_scene=previous_scene)
-        story = self.apply_scene_appearance_updates(story_id, story)
+        story = self.apply_scene_appearance_updates(story_id, story, appearance_reference)
         if payload.get("generate_images") is False:
             story["auto_background"] = {"mode": "skipped"}
         else:
@@ -996,7 +1417,7 @@ class AppHandler(BaseHTTPRequestHandler):
         )
         return self.send_json(story)
 
-    def apply_single_appearance_update(self, story_id, story, scene, update):
+    def apply_single_appearance_update(self, story_id, story, scene, update, prepared=None):
         character = story_character_for_update(story, update.get("character"))
         if not character:
             return appearance_update_skip(update, "character_not_found", "Personagem nao encontrado.")
@@ -1009,10 +1430,52 @@ class AppHandler(BaseHTTPRequestHandler):
                 db.set_active_appearance(character["id"], appearance["id"])
             return {"mode": action, "character_id": character["id"], "appearance_id": appearance["id"], "activated": bool(update.get("activate_after_generation", True))}
         if action == "create_new":
-            return self.queue_appearance_update_generation(story_id, story, scene, character, update)
+            return self.queue_appearance_update_generation(story_id, story, scene, character, update, prepared)
         return appearance_update_skip(update, "invalid_action", "Acao de aparencia invalida.")
 
-    def queue_appearance_update_generation(self, story_id, story, scene, character, update):
+    def prepare_appearance_update_generation(self, story_id, update):
+        if update.get("_reference_resolution_error"):
+            raise ValueError(update["_reference_resolution_error"])
+        settings = db.get_settings()
+        visual_style = db.visual_style_for_story(story_id)
+        story_reference = db.get_story_reference(update.get("_story_reference_id")) if update.get("_story_reference_id") else None
+        if story_reference and story_reference.get("story_id") != story_id:
+            raise ValueError("A referencia de aparencia nao pertence a esta historia.")
+        workbench_type = "appearance_reference" if story_reference else "appearance"
+        workbench_id = style_workbench(visual_style, workbench_type)
+        if not workbench_id:
+            message = "Workflow de Alterar Aparencia Com Referencia" if story_reference else "Workflow de Alterar Aparencia"
+            raise ValueError(f"Configure o {message} no estilo atual.")
+        source_prompt = appearance_update_change_prompt(update)
+        if not source_prompt:
+            raise ValueError("Prompt de alteracao de aparencia ausente.")
+        prompt = source_prompt
+        prompt_source = "appearance-update"
+        prompt_profile = prompt_profile_for_visual_style(settings, visual_style, workbench_type, workbench_id)
+        if prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
+            service_manager.activate_text_ai_role("story", settings)
+            prompt = narrative.generate_workbench_visual_prompt(
+                source_prompt,
+                workbench_type,
+                workbench_id,
+                prompt_profile,
+                source_prompt,
+                story_id=story_id,
+                ai_role="story",
+            )
+            prompt_source = "ollama:appearance-profile"
+        return {
+            "settings": settings,
+            "visual_style": visual_style,
+            "workbench_id": workbench_id,
+            "source_prompt": source_prompt,
+            "prompt": prompt,
+            "prompt_source": prompt_source,
+            "prompt_profile": prompt_profile,
+            "story_reference": story_reference,
+        }
+
+    def queue_appearance_update_generation(self, story_id, story, scene, character, update, prepared=None):
         base_appearance = find_character_appearance_for_update(
             story,
             character,
@@ -1024,28 +1487,15 @@ class AppHandler(BaseHTTPRequestHandler):
         reference_asset = db.get_asset(reference_asset_id)
         if not reference_asset or reference_asset.get("asset_type") != "sprite" or not reference_asset.get("file_path"):
             return appearance_update_skip(update, "reference_image_missing", "Aparencia base ainda nao tem imagem local de referencia.")
-        settings = db.get_settings()
-        visual_style = db.visual_style_for_story(story_id)
-        workbench_id = style_workbench(visual_style, "appearance")
-        if not workbench_id:
-            return appearance_update_skip(update, "appearance_workflow_missing", "Configure o Workflow de Alterar Aparencia no estilo atual.")
-        source_prompt = appearance_update_change_prompt(update)
-        if not source_prompt:
-            return appearance_update_skip(update, "change_prompt_missing", "Prompt de alteracao de aparencia ausente.")
-        prompt = source_prompt
-        prompt_source = "appearance-update"
-        prompt_profile = prompt_profile_for_visual_style(settings, visual_style, "appearance", workbench_id)
-        if prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
-            prompt = narrative.generate_workbench_visual_prompt(
-                source_prompt,
-                "appearance",
-                workbench_id,
-                prompt_profile,
-                source_prompt,
-                story_id=story_id,
-                ai_role="story",
-            )
-            prompt_source = "ollama:appearance-profile"
+        prepared = prepared or self.prepare_appearance_update_generation(story_id, update)
+        settings = prepared["settings"]
+        visual_style = prepared["visual_style"]
+        workbench_id = prepared["workbench_id"]
+        source_prompt = prepared["source_prompt"]
+        prompt = prepared["prompt"]
+        prompt_source = prepared["prompt_source"]
+        prompt_profile = prepared["prompt_profile"]
+        story_reference = prepared.get("story_reference")
 
         style_settings = (visual_style or {}).get("advanced_settings") or {}
         width = int(style_settings.get("width") or settings.get("sprite_width") or 640)
@@ -1061,6 +1511,7 @@ class AppHandler(BaseHTTPRequestHandler):
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
+        story_reference_path = (ROOT_DIR / story_reference["file_path"]).resolve() if story_reference else None
         comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-update")
         try:
             result, resolved_workbench_id = self.queue_comfy_image(
@@ -1079,6 +1530,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 preserve_workbench_settings,
                 generation_overrides,
                 reference_path,
+                None,
+                story_reference_path,
             )
             asset_id = db.add_asset(
                 story_id,
@@ -1095,6 +1548,8 @@ class AppHandler(BaseHTTPRequestHandler):
                         "appearance_generation": True,
                         "expression_group": bool(style_expressions_enabled(visual_style)),
                         "reference_asset_id": reference_asset_id,
+                        "story_reference_id": (story_reference or {}).get("id") or "",
+                        "story_reference_name": (story_reference or {}).get("label") or "",
                         "based_on_appearance_id": base_appearance.get("id"),
                         "workbench": resolved_workbench_id,
                         "visual_style_id": (visual_style or {}).get("id") or "",
@@ -1126,6 +1581,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     "character_id": character["id"],
                     "scene_id": scene.get("id") if scene else "",
                     "reference_asset_id": reference_asset_id,
+                    "story_reference_id": (story_reference or {}).get("id") or "",
+                    "story_reference_name": (story_reference or {}).get("label") or "",
                     "based_on_appearance_id": base_appearance.get("id"),
                     "workbench": resolved_workbench_id,
                     "prompt": prompt,
@@ -1166,6 +1623,19 @@ class AppHandler(BaseHTTPRequestHandler):
         finally:
             if comfy_token:
                 service_manager.end_comfy_generation(comfy_token, settings=settings, reason="queue-failed")
+
+    def wait_for_comfy_prompt_completion(self, settings, prompt_id, timeout_seconds=1800):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            history = comfy_client.get_history(settings.get("comfy_url"), prompt_id)
+            entry = history.get(prompt_id) or {}
+            if comfy_history_entry_failed(entry):
+                raise RuntimeError(f"O ComfyUI falhou ao gerar a aparencia ({prompt_id}).")
+            outputs = entry.get("outputs") or {}
+            if any((output or {}).get("images") for output in outputs.values()):
+                return True
+            time.sleep(1.0)
+        raise TimeoutError(f"Tempo limite excedido ao aguardar a aparencia no ComfyUI ({prompt_id}).")
 
     def regenerate_sprite_expression(self, base_asset_id, expression, payload):
         expression = normalize_expression(expression)
@@ -1329,7 +1799,7 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = db.get_settings()
         style = payload.get("style") if isinstance(payload.get("style"), dict) else {}
         asset_type = narrative.normalize_prompt_asset_type(payload.get("asset_type") or "appearance")
-        workbench_type = "background" if asset_type == "background" else ("appearance" if asset_type == "appearance" else "sprite")
+        workbench_type = "background" if asset_type == "background" else (asset_type if asset_type in {"appearance", "appearance_reference"} else "sprite")
         workbench_id = payload.get("workbench") or style_workbench(style, workbench_type) or default_workbench_for_asset(settings, workbench_type)
         prompt_profile = prompt_profile_for_visual_style(settings, style, asset_type, workbench_id)
         appearance = (payload.get("appearance") or "").strip()
@@ -1413,6 +1883,7 @@ class AppHandler(BaseHTTPRequestHandler):
         generation_overrides=None,
         input_image_path=None,
         expression_prompts=None,
+        reference_image_path=None,
     ):
         workbench_id = requested_workbench or default_workbench_for_asset(settings, asset_type)
         if workbench_id:
@@ -1442,6 +1913,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     preserve_generation_settings,
                     generation_overrides,
                     input_image_path,
+                    reference_image_path,
                     expression_prompts,
                 ),
                 workbench_id,
@@ -1470,12 +1942,16 @@ class AppHandler(BaseHTTPRequestHandler):
         if not scene or not scene.get("background_prompt"):
             return {"mode": "none"}
         if scene.get("background_asset_id"):
+            asset = db.get_asset(scene.get("background_asset_id"))
+            if asset:
+                self.sync_scene_scenario(story_id, scene, asset)
             return {"mode": "existing", "asset_id": scene.get("background_asset_id")}
 
         previous_scene, previous_background = self.find_previous_scene_background(story, scene)
         location_changed = scene_location_changed(scene)
         if previous_background and location_changed is False:
             db.set_scene_background(scene["id"], previous_background["id"])
+            self.sync_scene_scenario(story_id, scene, previous_background)
             db.add_api_log(
                 "local",
                 "background:carry-forward",
@@ -1493,6 +1969,7 @@ class AppHandler(BaseHTTPRequestHandler):
             previous_prompt = previous_scene.get("background_prompt") or previous_background.get("prompt") or ""
             if prompt_similarity(normalize_prompt(scene.get("background_prompt")), normalize_prompt(previous_prompt)) >= 0.42:
                 db.set_scene_background(scene["id"], previous_background["id"])
+                self.sync_scene_scenario(story_id, scene, previous_background)
                 db.add_api_log(
                     "local",
                     "background:carry-forward",
@@ -1511,6 +1988,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if reusable:
             reusable_asset = reusable["asset"]
             db.set_scene_background(scene["id"], reusable_asset["id"])
+            self.sync_scene_scenario(story_id, scene, reusable_asset)
             db.add_api_log(
                 "local",
                 "background:reuse",
@@ -1634,13 +2112,13 @@ class AppHandler(BaseHTTPRequestHandler):
         assets_by_id = {asset.get("id"): asset for asset in assets if asset.get("asset_type") == "background"}
         for scene in reversed(scenes[:-1]):
             asset = assets_by_id.get(scene.get("background_asset_id"))
-            if asset and asset.get("url"):
+            if asset and background_asset_is_ready(asset):
                 return scene, asset
             for candidate in assets:
                 if (
                     candidate.get("asset_type") == "background"
                     and candidate.get("scene_id") == scene.get("id")
-                    and candidate.get("url")
+                    and background_asset_is_ready(candidate)
                 ):
                     return scene, candidate
         return None, None
@@ -1649,13 +2127,23 @@ class AppHandler(BaseHTTPRequestHandler):
         scenes = story.get("scenes") or []
         assets = [
             asset for asset in (story.get("assets") or [])
-            if asset.get("asset_type") == "background" and asset.get("url")
+            if asset.get("asset_type") == "background" and background_asset_is_ready(asset)
         ]
         if not assets:
             return None
 
         assets_by_id = {asset.get("id"): asset for asset in assets}
         current_location = scene_location(current_scene)
+        for scenario in story.get("scenarios") or []:
+            asset = assets_by_id.get(scenario.get("asset_id"))
+            if asset and locations_match(current_location, scenario.get("name")):
+                return {
+                    "asset": asset,
+                    "reason": "saved scenario",
+                    "matched_scene_id": "",
+                    "matched_location": scenario.get("name") or "",
+                    "score": 1,
+                }
         prior_scenes = scenes_before_current(scenes, current_scene)
         for prior_scene in reversed(prior_scenes):
             prior_asset = background_asset_for_scene(prior_scene, assets, assets_by_id)
@@ -1693,6 +2181,22 @@ class AppHandler(BaseHTTPRequestHandler):
                 "score": best_score,
             }
         return None
+
+    def sync_scene_scenario(self, story_id, scene, asset, source_prompt="", enhanced_prompt=""):
+        if not scene or not asset:
+            return None
+        description = str(scene.get("background_prompt") or source_prompt or "").strip()
+        name = str(scene_location(scene) or db.friendly_scenario_name(description)).strip()
+        metadata = asset.get("metadata") or {}
+        return db.upsert_story_scenario(
+            story_id,
+            name,
+            description,
+            source_prompt or metadata.get("source_prompt") or description,
+            enhanced_prompt or asset.get("prompt") or "",
+            asset.get("id") or "",
+            active=True,
+        )
 
     def handle_asset_get(self, path):
         parts = path.strip("/").split("/")
@@ -1768,6 +2272,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 relative_path.as_posix(),
                 {"comfy_image": image, "content_type": content_type},
             )
+            if updated.get("asset_type") == "background" and updated.get("scene_id") and not updated.get("metadata", {}).get("scenario_pending"):
+                story = db.get_story(updated.get("story_id")) or {}
+                scene = next((item for item in story.get("scenes") or [] if item.get("id") == updated.get("scene_id")), None)
+                if scene:
+                    self.sync_scene_scenario(
+                        updated.get("story_id"),
+                        scene,
+                        updated,
+                        source_prompt=updated.get("metadata", {}).get("source_prompt") or scene.get("background_prompt") or "",
+                        enhanced_prompt=updated.get("prompt") or "",
+                    )
             if asset.get("metadata", {}).get("expression_regeneration"):
                 db.add_api_log(
                     "local",
@@ -2179,6 +2694,8 @@ def style_workbench(style, asset_type="sprite"):
         return style.get("background_workbench") or ""
     if asset_type in {"appearance", "sprite_appearance"}:
         return style.get("appearance_workbench") or ""
+    if asset_type in {"appearance_reference", "sprite_appearance_reference"}:
+        return style.get("appearance_reference_workbench") or ""
     if asset_type in {"expression", "sprite_expression"}:
         return style.get("expression_workbench") or ""
     return style.get("sprite_workbench") or ""
@@ -2835,6 +3352,32 @@ def folded_ascii_text(value):
     return "".join(char for char in text if not unicodedata.combining(char))
 
 
+def valid_story_reference_name(value):
+    return bool(re.fullmatch(r"[A-Za-zÀ-ÿ0-9_-]+(?:[ \t]+[A-Za-zÀ-ÿ0-9_-]+)*", str(value or "").strip()))
+
+
+def story_reference_markers(value):
+    text = str(value or "")
+    pattern = re.compile(r"\[\s*([A-Za-zÀ-ÿ0-9_-]+(?:[ \t]+[A-Za-zÀ-ÿ0-9_-]+)*)\s*\]")
+    markers = []
+    for match in pattern.finditer(text):
+        before = text[match.start() - 1] if match.start() > 0 else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        if before == "[" or after == "]":
+            continue
+        markers.append({"name": match.group(1).strip(), "start": match.start(), "end": match.end()})
+    return markers
+
+
+def remove_story_reference_markers(value, markers=None):
+    text = str(value or "")
+    for marker in reversed(markers if markers is not None else story_reference_markers(text)):
+        text = text[:marker["start"]] + text[marker["end"]:]
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    return text.strip()
+
+
 def location_tokens(value):
     words = re.findall(r"[a-z0-9]+", folded_ascii_text(value))
     return {word for word in words if len(word) > 1 and word not in LOCATION_STOPWORDS}
@@ -2850,7 +3393,15 @@ def locations_match(left, right):
     overlap = left_tokens & right_tokens
     if len(overlap) < 2:
         return False
-    return len(overlap) / min(len(left_tokens), len(right_tokens)) >= 0.8
+    return len(overlap) / max(len(left_tokens), len(right_tokens)) >= 0.8
+
+
+def background_asset_is_ready(asset):
+    file_path = str((asset or {}).get("file_path") or "").strip()
+    if not file_path:
+        return False
+    target = (ROOT_DIR / file_path).resolve()
+    return is_relative_to(target, ROOT_DIR) and target.exists() and target.is_file()
 
 
 def scenes_before_current(scenes, current_scene):
@@ -2864,13 +3415,13 @@ def scenes_before_current(scenes, current_scene):
 
 def background_asset_for_scene(scene, assets, assets_by_id):
     asset = assets_by_id.get((scene or {}).get("background_asset_id"))
-    if asset and asset.get("url"):
+    if asset and background_asset_is_ready(asset):
         return asset
     scene_id = (scene or {}).get("id")
     return next(
         (
             asset for asset in assets
-            if asset.get("asset_type") == "background" and asset.get("scene_id") == scene_id and asset.get("url")
+            if asset.get("asset_type") == "background" and asset.get("scene_id") == scene_id and background_asset_is_ready(asset)
         ),
         None,
     )

@@ -4,6 +4,7 @@ import re
 import shutil
 import sqlite3
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -188,6 +189,30 @@ def init_db():
                 FOREIGN KEY(scene_id) REFERENCES scenes(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS story_references (
+                id TEXT PRIMARY KEY,
+                story_id TEXT NOT NULL,
+                label TEXT,
+                file_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS story_scenarios (
+                id TEXT PRIMARY KEY,
+                story_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                prompt TEXT,
+                enhanced_prompt TEXT,
+                asset_id TEXT,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
+                FOREIGN KEY(asset_id) REFERENCES generated_assets(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS choices (
                 id TEXT PRIMARY KEY,
                 story_id TEXT NOT NULL,
@@ -230,6 +255,9 @@ def init_db():
                 appearance_workbench TEXT,
                 appearance_prompt_command TEXT,
                 appearance_prompt_example TEXT,
+                appearance_reference_workbench TEXT,
+                appearance_reference_prompt_command TEXT,
+                appearance_reference_prompt_example TEXT,
                 expressions_enabled INTEGER NOT NULL DEFAULT 0,
                 expression_prompts_visible INTEGER NOT NULL DEFAULT 0,
                 expression_workbench TEXT,
@@ -258,6 +286,9 @@ def init_db():
                 "appearance_workbench": "TEXT",
                 "appearance_prompt_command": "TEXT",
                 "appearance_prompt_example": "TEXT",
+                "appearance_reference_workbench": "TEXT",
+                "appearance_reference_prompt_command": "TEXT",
+                "appearance_reference_prompt_example": "TEXT",
                 "expressions_enabled": "INTEGER NOT NULL DEFAULT 0",
                 "expression_prompts_visible": "INTEGER NOT NULL DEFAULT 0",
                 "expression_workbench": "TEXT",
@@ -287,6 +318,7 @@ def init_db():
         seed_visual_styles(conn)
         backfill_visual_style_backgrounds(conn)
         run_once(conn, "cleanup_visual_style_background_prompts_v1", cleanup_visual_style_background_prompts)
+        run_once(conn, "story_scenarios_v1", backfill_story_scenarios)
 
 
 def ensure_columns(conn, table, columns):
@@ -303,6 +335,88 @@ def run_once(conn, key, callback):
         return
     callback(conn)
     conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, json.dumps(True)))
+
+
+def backfill_story_scenarios(conn):
+    timestamp = now_ms()
+    stories = conn.execute("SELECT id, current_scene_id FROM stories").fetchall()
+    for story in stories:
+        scenes = conn.execute(
+            "SELECT * FROM scenes WHERE story_id = ? AND background_asset_id IS NOT NULL ORDER BY scene_order",
+            (story["id"],),
+        ).fetchall()
+        scenarios_by_key = {}
+        for scene in scenes:
+            asset = conn.execute(
+                "SELECT * FROM generated_assets WHERE id = ? AND asset_type = 'background'",
+                (scene["background_asset_id"],),
+            ).fetchone()
+            if not asset:
+                continue
+            raw = json_load(scene["raw_ai_response"], {})
+            location = raw.get("location") if isinstance(raw, dict) else ""
+            if isinstance(location, dict):
+                location = location.get("name") or location.get("title") or ""
+            description = str(scene["background_prompt"] or "").strip()
+            name = str(location or friendly_scenario_name(description)).strip()
+            key = normalize_scenario_name(name)
+            metadata = json_load(asset["metadata"], {})
+            scenario = scenarios_by_key.get(key)
+            is_active = 1 if scene["id"] == story["current_scene_id"] else 0
+            if is_active:
+                conn.execute("UPDATE story_scenarios SET is_active = 0 WHERE story_id = ?", (story["id"],))
+            if scenario:
+                conn.execute(
+                    "UPDATE story_scenarios SET asset_id = ?, description = ?, prompt = ?, enhanced_prompt = ?, is_active = CASE WHEN ? = 1 THEN 1 ELSE is_active END, updated_at = ? WHERE id = ?",
+                    (
+                        asset["id"],
+                        description or scenario["description"],
+                        metadata.get("source_prompt") or description or scenario["prompt"],
+                        asset["prompt"] or scenario["enhanced_prompt"],
+                        is_active,
+                        timestamp,
+                        scenario["id"],
+                    ),
+                )
+                scenario = dict(scenario)
+                scenario.update({"asset_id": asset["id"], "description": description})
+                scenarios_by_key[key] = scenario
+                continue
+            scenario_id = new_id("scenario")
+            conn.execute(
+                """
+                INSERT INTO story_scenarios (
+                    id, story_id, name, description, prompt, enhanced_prompt,
+                    asset_id, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scenario_id, story["id"], name, description,
+                    metadata.get("source_prompt") or description, asset["prompt"] or "",
+                    asset["id"], is_active, asset["created_at"] or timestamp, timestamp,
+                ),
+            )
+            scenarios_by_key[key] = {
+                "id": scenario_id, "description": description, "prompt": metadata.get("source_prompt") or description,
+                "enhanced_prompt": asset["prompt"] or "", "asset_id": asset["id"],
+            }
+
+
+def normalize_scenario_name(value):
+    text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    stopwords = {"a", "as", "da", "das", "de", "do", "dos", "em", "na", "nas", "no", "nos", "o", "os"}
+    return " ".join(word for word in re.findall(r"[a-z0-9]+", text) if word not in stopwords)
+
+
+def friendly_scenario_name(description):
+    text = " ".join(str(description or "").strip().split())
+    if not text:
+        return "Cenario sem nome"
+    first = re.split(r"[.!?]", text, maxsplit=1)[0].strip(" ,;:-")
+    words = first.split()[:7]
+    name = " ".join(words).strip()
+    return name[:72] or "Cenario sem nome"
 
 
 def row_to_dict(row):
@@ -507,9 +621,10 @@ def seed_visual_styles(conn):
                 background_prompt_suffix, background_negative_prompt, background_settings,
                 sprite_prompt_command, sprite_prompt_example, background_prompt_command,
                 background_prompt_example, appearance_workbench, appearance_prompt_command, appearance_prompt_example,
+                appearance_reference_workbench, appearance_reference_prompt_command, appearance_reference_prompt_example,
                 expressions_enabled, expression_prompts_visible, expression_workbench,
                 expression_prompts, cover_path, advanced_settings, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id("style"),
@@ -530,6 +645,9 @@ def seed_visual_styles(conn):
                 item.get("appearance_workbench") or "",
                 item.get("appearance_prompt_command") or "",
                 item.get("appearance_prompt_example") or "",
+                item.get("appearance_reference_workbench") or "",
+                item.get("appearance_reference_prompt_command") or "",
+                item.get("appearance_reference_prompt_example") or "",
                 1 if item.get("expressions_enabled") else 0,
                 1 if item.get("expression_prompts_visible") else 0,
                 item.get("expression_workbench") or "",
@@ -700,9 +818,10 @@ def create_visual_style(payload):
                 background_prompt_suffix, background_negative_prompt, background_settings,
                 sprite_prompt_command, sprite_prompt_example, background_prompt_command,
                 background_prompt_example, appearance_workbench, appearance_prompt_command, appearance_prompt_example,
+                appearance_reference_workbench, appearance_reference_prompt_command, appearance_reference_prompt_example,
                 expressions_enabled, expression_prompts_visible, expression_workbench,
                 expression_prompts, cover_path, advanced_settings, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 style_id,
@@ -723,6 +842,9 @@ def create_visual_style(payload):
                 data["appearance_workbench"],
                 data["appearance_prompt_command"],
                 data["appearance_prompt_example"],
+                data["appearance_reference_workbench"],
+                data["appearance_reference_prompt_command"],
+                data["appearance_reference_prompt_example"],
                 1 if data["expressions_enabled"] else 0,
                 1 if data["expression_prompts_visible"] else 0,
                 data["expression_workbench"],
@@ -756,6 +878,9 @@ def update_visual_style(style_id, payload):
         "appearance_workbench",
         "appearance_prompt_command",
         "appearance_prompt_example",
+        "appearance_reference_workbench",
+        "appearance_reference_prompt_command",
+        "appearance_reference_prompt_example",
         "expressions_enabled",
         "expression_prompts_visible",
         "expression_workbench",
@@ -818,6 +943,9 @@ def normalize_visual_style_payload(payload, partial=False):
         "appearance_workbench",
         "appearance_prompt_command",
         "appearance_prompt_example",
+        "appearance_reference_workbench",
+        "appearance_reference_prompt_command",
+        "appearance_reference_prompt_example",
         "cover_path",
         "expression_workbench",
     ]
@@ -1150,6 +1278,20 @@ def duplicate_story(story_id):
                 (new_appearance_id, new_story_id, old_appearance_id),
             )
 
+        for row in conn.execute("SELECT * FROM story_scenarios WHERE story_id = ?", (story_id,)).fetchall():
+            conn.execute(
+                """
+                INSERT INTO story_scenarios (
+                    id, story_id, name, description, prompt, enhanced_prompt,
+                    asset_id, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("scenario"), new_story_id, row["name"], row["description"], row["prompt"],
+                    row["enhanced_prompt"], asset_map.get(row["asset_id"], ""), row["is_active"], timestamp, timestamp,
+                ),
+            )
+
         current_scene_id = scene_map.get(story["current_scene_id"])
         if current_scene_id:
             conn.execute(
@@ -1229,6 +1371,10 @@ def get_story(story_id):
             """,
             (story_id,),
         ).fetchall()
+        scenarios = conn.execute(
+            "SELECT * FROM story_scenarios WHERE story_id = ? ORDER BY is_active DESC, updated_at DESC, name COLLATE NOCASE",
+            (story_id,),
+        ).fetchall()
         style = None
         if story["visual_style_id"]:
             style = conn.execute("SELECT * FROM visual_styles WHERE id = ?", (story["visual_style_id"],)).fetchone()
@@ -1240,6 +1386,7 @@ def get_story(story_id):
     data["lore_entries"] = [row_to_dict(row) for row in lore]
     data["assets"] = [serialize_asset(row) for row in assets]
     data["appearances"] = [serialize_appearance(row) for row in appearances]
+    data["scenarios"] = [serialize_story_scenario(row, assets) for row in scenarios]
     return data
 
 
@@ -1758,6 +1905,259 @@ def add_asset(story_id, payload):
     return asset_id
 
 
+def list_story_references(story_id):
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM story_references WHERE story_id = ? ORDER BY created_at DESC",
+            (story_id,),
+        ).fetchall()
+    return [serialize_story_reference(row) for row in rows]
+
+
+def get_story_reference(reference_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM story_references WHERE id = ?", (reference_id,)).fetchone()
+    return serialize_story_reference(row)
+
+
+def normalize_story_reference_label(value):
+    return str(value or "").strip().casefold()
+
+
+def find_story_reference_by_label(story_id, label):
+    target = normalize_story_reference_label(label)
+    if not target:
+        return None
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM story_references WHERE story_id = ?", (story_id,)).fetchall()
+        row = next((item for item in rows if normalize_story_reference_label(item["label"]) == target), None)
+    return serialize_story_reference(row)
+
+
+def add_story_reference(story_id, label, file_path):
+    reference_id = new_id("reference")
+    timestamp = now_ms()
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM stories WHERE id = ?", (story_id,)).fetchone():
+            return None
+        duplicate = conn.execute("SELECT label FROM story_references WHERE story_id = ?", (story_id,)).fetchall()
+        if any(normalize_story_reference_label(row["label"]) == normalize_story_reference_label(label) for row in duplicate):
+            raise ValueError("Ja existe uma referencia com esse nome nesta historia.")
+        conn.execute(
+            "INSERT INTO story_references (id, story_id, label, file_path, created_at) VALUES (?, ?, ?, ?, ?)",
+            (reference_id, story_id, str(label or "Referencia").strip(), str(file_path or ""), timestamp),
+        )
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story_reference(reference_id)
+
+
+def rename_story_reference(reference_id, label):
+    label = str(label or "").strip()
+    if not label:
+        raise ValueError("O nome da referencia nao pode ficar vazio.")
+    timestamp = now_ms()
+    with connect() as conn:
+        reference = conn.execute("SELECT * FROM story_references WHERE id = ?", (reference_id,)).fetchone()
+        if not reference:
+            return None
+        rows = conn.execute(
+            "SELECT id, label FROM story_references WHERE story_id = ? AND id != ?",
+            (reference["story_id"], reference_id),
+        ).fetchall()
+        if any(normalize_story_reference_label(row["label"]) == normalize_story_reference_label(label) for row in rows):
+            raise ValueError("Ja existe uma referencia com esse nome nesta historia.")
+        conn.execute("UPDATE story_references SET label = ? WHERE id = ?", (label, reference_id))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, reference["story_id"]))
+    return get_story_reference(reference_id)
+
+
+def delete_story_reference(reference_id):
+    reference = get_story_reference(reference_id)
+    if not reference:
+        return None
+    with connect() as conn:
+        conn.execute("DELETE FROM story_references WHERE id = ?", (reference_id,))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (now_ms(), reference["story_id"]))
+    return reference
+
+
+def get_story_scenario(scenario_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM story_scenarios WHERE id = ?", (scenario_id,)).fetchone()
+        asset = conn.execute("SELECT * FROM generated_assets WHERE id = ?", (row["asset_id"],)).fetchone() if row and row["asset_id"] else None
+    return serialize_story_scenario(row, [asset] if asset else [])
+
+
+def find_story_scenario_by_name(story_id, name):
+    target = normalize_scenario_name(name)
+    if not target:
+        return None
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM story_scenarios WHERE story_id = ?", (story_id,)).fetchall()
+        row = next((item for item in rows if normalize_scenario_name(item["name"]) == target), None)
+        asset = conn.execute("SELECT * FROM generated_assets WHERE id = ?", (row["asset_id"],)).fetchone() if row and row["asset_id"] else None
+    return serialize_story_scenario(row, [asset] if asset else [])
+
+
+def create_story_scenario(story_id, payload, active=False):
+    timestamp = now_ms()
+    name = str((payload or {}).get("name") or "").strip()
+    if not name:
+        return None
+    asset_id = str((payload or {}).get("asset_id") or "").strip()
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM stories WHERE id = ?", (story_id,)).fetchone():
+            return None
+        if asset_id:
+            asset = conn.execute(
+                "SELECT 1 FROM generated_assets WHERE id = ? AND story_id = ? AND asset_type = 'background'",
+                (asset_id, story_id),
+            ).fetchone()
+            if not asset:
+                return None
+        if active:
+            conn.execute("UPDATE story_scenarios SET is_active = 0 WHERE story_id = ?", (story_id,))
+        scenario_id = new_id("scenario")
+        conn.execute(
+            """
+            INSERT INTO story_scenarios (
+                id, story_id, name, description, prompt, enhanced_prompt,
+                asset_id, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scenario_id, story_id, name,
+                str(payload.get("description") or "").strip(),
+                str(payload.get("prompt") or "").strip(),
+                str(payload.get("enhanced_prompt") or "").strip(),
+                asset_id, 1 if active else 0, timestamp, timestamp,
+            ),
+        )
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story_scenario(scenario_id)
+
+
+def upsert_story_scenario(story_id, name, description, prompt, enhanced_prompt, asset_id, active=True):
+    existing = find_story_scenario_by_name(story_id, name)
+    if not existing:
+        return create_story_scenario(
+            story_id,
+            {
+                "name": name or friendly_scenario_name(description),
+                "description": description,
+                "prompt": prompt,
+                "enhanced_prompt": enhanced_prompt,
+                "asset_id": asset_id,
+            },
+            active=active,
+        )
+    timestamp = now_ms()
+    with connect() as conn:
+        if active:
+            conn.execute("UPDATE story_scenarios SET is_active = 0 WHERE story_id = ?", (story_id,))
+        conn.execute(
+            """
+            UPDATE story_scenarios SET
+                description = CASE WHEN ? != '' THEN ? ELSE description END,
+                prompt = CASE WHEN ? != '' THEN ? ELSE prompt END,
+                enhanced_prompt = CASE WHEN ? != '' THEN ? ELSE enhanced_prompt END,
+                asset_id = CASE WHEN ? != '' THEN ? ELSE asset_id END,
+                is_active = CASE WHEN ? = 1 THEN 1 ELSE is_active END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                description, description, prompt, prompt, enhanced_prompt, enhanced_prompt,
+                asset_id, asset_id, 1 if active else 0, timestamp, existing["id"],
+            ),
+        )
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story_scenario(existing["id"])
+
+
+def activate_story_scenario(story_id, scenario_id):
+    timestamp = now_ms()
+    with connect() as conn:
+        scenario = conn.execute(
+            "SELECT * FROM story_scenarios WHERE id = ? AND story_id = ?",
+            (scenario_id, story_id),
+        ).fetchone()
+        if not scenario or not scenario["asset_id"]:
+            return None
+        asset = conn.execute(
+            "SELECT * FROM generated_assets WHERE id = ? AND story_id = ? AND asset_type = 'background' AND file_path != ''",
+            (scenario["asset_id"], story_id),
+        ).fetchone()
+        if not asset:
+            return None
+        story = conn.execute("SELECT current_scene_id FROM stories WHERE id = ?", (story_id,)).fetchone()
+        conn.execute("UPDATE story_scenarios SET is_active = 0 WHERE story_id = ?", (story_id,))
+        conn.execute("UPDATE story_scenarios SET is_active = 1, updated_at = ? WHERE id = ?", (timestamp, scenario_id))
+        if story and story["current_scene_id"]:
+            scene = conn.execute("SELECT raw_ai_response FROM scenes WHERE id = ?", (story["current_scene_id"],)).fetchone()
+            raw = json_load(scene["raw_ai_response"], {}) if scene else {}
+            raw = raw if isinstance(raw, dict) else {}
+            raw["location"] = scenario["name"]
+            raw["location_changed"] = True
+            background_prompt = scenario["prompt"] or scenario["description"] or ""
+            conn.execute(
+                "UPDATE scenes SET background_asset_id = ?, background_prompt = ?, raw_ai_response = ? WHERE id = ?",
+                (asset["id"], background_prompt, json.dumps(raw, ensure_ascii=False), story["current_scene_id"]),
+            )
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return get_story(story_id)
+
+
+def replace_story_scenario_asset(story_id, scenario_id, asset_id, prompt, enhanced_prompt):
+    timestamp = now_ms()
+    with connect() as conn:
+        scenario = conn.execute(
+            "SELECT * FROM story_scenarios WHERE id = ? AND story_id = ?",
+            (scenario_id, story_id),
+        ).fetchone()
+        asset = conn.execute(
+            "SELECT * FROM generated_assets WHERE id = ? AND story_id = ? AND asset_type = 'background' AND file_path != ''",
+            (asset_id, story_id),
+        ).fetchone()
+        if not scenario or not asset:
+            return None
+        old_asset_id = scenario["asset_id"] or ""
+        conn.execute(
+            "UPDATE story_scenarios SET asset_id = ?, prompt = ?, enhanced_prompt = ?, updated_at = ? WHERE id = ?",
+            (asset_id, prompt or scenario["prompt"], enhanced_prompt or asset["prompt"] or "", timestamp, scenario_id),
+        )
+        if scenario["is_active"]:
+            story = conn.execute("SELECT current_scene_id FROM stories WHERE id = ?", (story_id,)).fetchone()
+            if story and story["current_scene_id"]:
+                conn.execute(
+                    "UPDATE scenes SET background_asset_id = ?, background_prompt = ? WHERE id = ?",
+                    (asset_id, prompt or scenario["prompt"] or scenario["description"] or "", story["current_scene_id"]),
+                )
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
+    return {"story": get_story(story_id), "old_asset_id": old_asset_id}
+
+
+def delete_story_scenario(story_id, scenario_id):
+    scenario = get_story_scenario(scenario_id)
+    if not scenario or scenario.get("story_id") != story_id:
+        return None
+    with connect() as conn:
+        conn.execute("DELETE FROM story_scenarios WHERE id = ?", (scenario_id,))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (now_ms(), story_id))
+        scene_refs = conn.execute("SELECT COUNT(*) FROM scenes WHERE background_asset_id = ?", (scenario.get("asset_id") or "",)).fetchone()[0]
+        scenario_refs = conn.execute("SELECT COUNT(*) FROM story_scenarios WHERE asset_id = ?", (scenario.get("asset_id") or "",)).fetchone()[0]
+    return {"scenario": scenario, "asset_deletable": bool(scenario.get("asset_id") and not scene_refs and not scenario_refs), "story": get_story(story_id)}
+
+
+def asset_is_referenced(asset_id):
+    if not asset_id:
+        return False
+    with connect() as conn:
+        scene_refs = conn.execute("SELECT COUNT(*) FROM scenes WHERE background_asset_id = ?", (asset_id,)).fetchone()[0]
+        scenario_refs = conn.execute("SELECT COUNT(*) FROM story_scenarios WHERE asset_id = ?", (asset_id,)).fetchone()[0]
+    return bool(scene_refs or scenario_refs)
+
+
 def update_asset_base(asset_id, base_asset_id):
     with connect() as conn:
         conn.execute(
@@ -2263,6 +2663,28 @@ def serialize_asset(row):
         data["appearance_id"] = data.get("appearance_id") or ""
     data["metadata"] = json_load(data.get("metadata"), {})
     data["url"] = f"/api/assets/{data['id']}/file" if data.get("file_path") else ""
+    return data
+
+
+def serialize_story_reference(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["url"] = f"/api/story-references/{data['id']}/file" if data.get("file_path") else ""
+    return data
+
+
+def serialize_story_scenario(row, assets=None):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    assets = assets or []
+    asset = next((item for item in assets if item and item["id"] == data.get("asset_id")), None)
+    asset_data = serialize_asset(asset) if asset else (get_asset(data.get("asset_id")) if data.get("asset_id") else None)
+    data["is_active"] = bool(data.get("is_active"))
+    data["image_path"] = (asset_data or {}).get("file_path") or ""
+    data["url"] = (asset_data or {}).get("url") or ""
+    data["asset"] = asset_data
     return data
 
 

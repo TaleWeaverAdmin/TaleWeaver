@@ -36,8 +36,16 @@ const state = {
   styleTab: "sprites",
   styleSpriteAdvanced: false,
   styleBackgroundAdvanced: false,
-  stylePromptCommandsVisible: false,
+  stylePromptCommandsVisible: {},
   stylePromptTest: { assetType: "appearance", appearance: "", clothing: "", result: "" },
+  appearanceDesignerTab: "single",
+  appearanceReferenceId: "",
+  appearancePrompt: "",
+  appearanceImprovePrompt: true,
+  storyReferences: [],
+  referencePicker: null,
+  selectedScenarioId: "",
+  referenceEditingId: "",
   settingsAdvanced: false,
   editMode: false,
   storySort: "recent",
@@ -46,6 +54,12 @@ const state = {
   storyTopnavOpen: false,
   spriteEditMode: false,
 };
+
+let pendingStoryReferenceDecision = null;
+
+const spriteAlphaMaskCache = new Map();
+const SPRITE_ALPHA_HIT_THRESHOLD = 8;
+const SPRITE_ALPHA_CACHE_LIMIT = 32;
 
 const OLLAMA_PRESETS = {
   fast: {
@@ -357,7 +371,14 @@ async function api(path, options = {}) {
     },
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Erro inesperado.");
+  if (!response.ok) {
+    const error = new Error(data.error || "Erro inesperado.");
+    error.status = response.status;
+    error.code = data.code || "";
+    error.referenceName = data.reference_name || "";
+    error.cleanUserInput = data.clean_user_input || "";
+    throw error;
+  }
   return data;
 }
 
@@ -372,6 +393,7 @@ async function loadStory(id) {
     state.spriteExitMap = {};
   }
   state.activeStory = await api(`/api/stories/${id}`);
+  await loadStoryReferences();
 }
 
 async function loadSettings() {
@@ -725,7 +747,7 @@ function renderStyleSpriteTab(draft) {
         ${styleTextarea("negative_prompt", "Prompt negativo de sprite", draft.negative_prompt || "")}
         ${renderExpressionWorkflowSetting(draft)}
         ${renderStylePromptCommandToggle("sprite")}
-        ${state.stylePromptCommandsVisible ? renderStylePromptCommandFields(draft, "sprite") : ""}
+        ${stylePromptCommandsAreVisible("sprite") ? renderStylePromptCommandFields(draft, "sprite") : ""}
         <label class="check-row full">
           <input type="checkbox" id="style_sprite_advanced_toggle" ${state.styleSpriteAdvanced ? "checked" : ""}>
           <span>Campos avancados de sprites</span>
@@ -751,7 +773,7 @@ function renderStyleBackgroundTab(draft) {
         ${styleTextarea("background_prompt_suffix", "Sufixo do prompt de cenario", draft.background_prompt_suffix || "")}
         ${styleTextarea("background_negative_prompt", "Prompt negativo de cenario", draft.background_negative_prompt || "")}
         ${renderStylePromptCommandToggle("background")}
-        ${state.stylePromptCommandsVisible ? renderStylePromptCommandFields(draft, "background") : ""}
+        ${stylePromptCommandsAreVisible("background") ? renderStylePromptCommandFields(draft, "background") : ""}
         <label class="check-row full">
           <input type="checkbox" id="style_background_advanced_toggle" ${state.styleBackgroundAdvanced ? "checked" : ""}>
           <span>Campos avancados de cenarios</span>
@@ -775,7 +797,15 @@ function renderStyleAppearancesTab() {
           </select>
         </div>
         ${renderStylePromptCommandToggle("appearance")}
-        ${state.stylePromptCommandsVisible ? renderStylePromptCommandFields(draft, "appearance") : ""}
+        ${stylePromptCommandsAreVisible("appearance") ? renderStylePromptCommandFields(draft, "appearance") : ""}
+        <div class="field full">
+          <label for="style_appearance_reference_workbench">Workflow de Alterar Aparência Com Referência</label>
+          <select id="style_appearance_reference_workbench" name="appearance_reference_workbench">
+            ${renderWorkbenchOptions(draft.appearance_reference_workbench || "")}
+          </select>
+        </div>
+        ${renderStylePromptCommandToggle("appearance_reference")}
+        ${stylePromptCommandsAreVisible("appearance_reference") ? renderStylePromptCommandFields(draft, "appearance_reference") : ""}
       </div>
     </section>
   `;
@@ -797,6 +827,7 @@ function emptyVisualStyleDraft() {
     sprite_workbench: "",
     background_workbench: "",
     appearance_workbench: "",
+    appearance_reference_workbench: "",
     background_prompt_prefix: "",
     background_prompt_suffix: "",
     background_negative_prompt: "",
@@ -806,6 +837,8 @@ function emptyVisualStyleDraft() {
     background_prompt_example: "",
     appearance_prompt_command: "",
     appearance_prompt_example: "",
+    appearance_reference_prompt_command: "",
+    appearance_reference_prompt_example: "",
     expressions_enabled: false,
     expression_workbench: "",
     cover_url: "",
@@ -885,13 +918,18 @@ function styleTextarea(name, label, value) {
 }
 
 function renderStylePromptCommandToggle(assetType) {
-  const id = `style_prompt_commands_toggle_${normalizeStylePromptAssetType(assetType)}`;
+  const normalized = normalizeStylePromptAssetType(assetType);
+  const id = `style_prompt_commands_toggle_${normalized}`;
   return `
     <label class="check-row full">
-      <input type="checkbox" id="${escapeAttr(id)}" class="style-prompt-commands-toggle" ${state.stylePromptCommandsVisible ? "checked" : ""}>
+      <input type="checkbox" id="${escapeAttr(id)}" class="style-prompt-commands-toggle" data-asset-type="${escapeAttr(normalized)}" ${stylePromptCommandsAreVisible(normalized) ? "checked" : ""}>
       <span>Mostrar comandos de geracao de prompt</span>
     </label>
   `;
+}
+
+function stylePromptCommandsAreVisible(assetType) {
+  return Boolean(state.stylePromptCommandsVisible?.[normalizeStylePromptAssetType(assetType)]);
 }
 
 function renderStylePromptCommandFields(draft, assetType) {
@@ -962,6 +1000,12 @@ function stylePromptConfig(assetType) {
       exampleField: "appearance_prompt_example",
       commandLabel: "Comando de geracao de prompt para aparencias",
     },
+    appearance_reference: {
+      assetType: "appearance_reference",
+      commandField: "appearance_reference_prompt_command",
+      exampleField: "appearance_reference_prompt_example",
+      commandLabel: "Comando de geracao de prompt para aparencias com referencia",
+    },
   };
   return configs[type] || configs.sprite;
 }
@@ -969,6 +1013,7 @@ function stylePromptConfig(assetType) {
 function normalizeStylePromptAssetType(assetType) {
   if (assetType === "background" || assetType === "backgrounds") return "background";
   if (assetType === "appearance" || assetType === "appearances") return "appearance";
+  if (assetType === "appearance_reference") return "appearance_reference";
   return "sprite";
 }
 
@@ -1884,6 +1929,8 @@ function renderPlay() {
           <button type="button" class="${state.editMode ? "primary" : ""}" data-action="toggle-edit-mode" role="menuitem">Editar</button>
           <button type="button" data-action="register-memory" role="menuitem">Register</button>
           <button type="button" data-drawer="scene" role="menuitem">Cena</button>
+          <button type="button" data-action="open-scenarios" role="menuitem">Cenários</button>
+          <button type="button" data-action="open-references-menu" role="menuitem">Referências</button>
           <button type="button" data-drawer="history" role="menuitem">Historico</button>
           <button type="button" data-drawer="characters" role="menuitem">Personagens</button>
           <button type="button" data-action="logs" role="menuitem">Logs</button>
@@ -2314,7 +2361,10 @@ function renderSprites(scene, activeSpeaker = "", interactionReady = false, curr
         : "neutral";
     const motionClass = `${item.entering ? "entering" : ""} ${item.exiting ? "exiting" : ""}`.trim();
     const interactionClass = `${clickable && !item.exiting ? "sprite-clickable" : ""} ${selectedKey && characterKey === selectedKey ? "speaker-selected" : ""} ${expressionChanged ? "expression-swapping" : ""}`.trim();
-    const clickAttrs = clickable && !item.exiting
+    const alphaHitAttrs = clickable && !item.exiting
+      ? `data-sprite-alpha-hit="true" data-name="${escapeAttr(character.name)}" title="Ouvir ${escapeAttr(character.name)} agora" role="button" tabindex="0" aria-label="Ouvir ${escapeAttr(character.name)} agora"`
+      : "";
+    const standinClickAttrs = clickable && !item.exiting
       ? `data-action="select-sprite-speaker" data-name="${escapeAttr(character.name)}" title="Ouvir ${escapeAttr(character.name)} agora" role="button" tabindex="0"`
       : "";
     const slot = spriteSlotLayout(index, characters.length, character.position || "center");
@@ -2323,7 +2373,7 @@ function renderSprites(scene, activeSpeaker = "", interactionReady = false, curr
         editPanels.push(renderSpriteEditPanel(registeredCharacter, character, slot, viewMode));
       }
       return `
-        <div class="scene-sprite-frame ${escapeAttr(slot.className)} ${viewMode} ${focusClass} ${motionClass} ${interactionClass}" ${slot.left ? `style="left: ${slot.left}%"` : ""}>
+        <div class="scene-sprite-frame ${escapeAttr(slot.className)} ${viewMode} ${focusClass} ${motionClass} ${interactionClass}" ${alphaHitAttrs} ${slot.left ? `style="left: ${slot.left}%"` : ""}>
           ${expressionChanged ? `
             <img
               class="scene-sprite expression-old"
@@ -2338,7 +2388,6 @@ function renderSprites(scene, activeSpeaker = "", interactionReady = false, curr
             class="scene-sprite ${expressionChanged ? "expression-new" : ""}"
             src="${escapeAttr(sprite.url)}"
             alt="${escapeAttr(character.name)}"
-            ${clickAttrs}
             loading="eager"
             decoding="async"
           >
@@ -2346,7 +2395,7 @@ function renderSprites(scene, activeSpeaker = "", interactionReady = false, curr
       `;
     }
     return `
-      <div class="sprite-standin ${escapeAttr(slot.className)} ${focusClass} ${motionClass} ${interactionClass}" ${clickAttrs} ${slot.left ? `style="left: ${slot.left}%"` : ""}>
+      <div class="sprite-standin ${escapeAttr(slot.className)} ${focusClass} ${motionClass} ${interactionClass}" ${standinClickAttrs} ${slot.left ? `style="left: ${slot.left}%"` : ""}>
         <div>
           <strong>${escapeHtml(character.name)}</strong>
           <span>${escapeHtml(effectiveExpression || "neutral")}</span>
@@ -2364,7 +2413,7 @@ function effectiveSpriteExpression(sceneCharacter, currentDialogue) {
   if (currentDialogue && dialogueTargetsCharacter(currentDialogue, sceneCharacter)) {
     return normalizeExpression(currentDialogue.expression || "neutral");
   }
-  return normalizeExpression(sceneCharacter.expression || "neutral");
+  return "neutral";
 }
 
 function dialogueTargetsCharacter(dialogue, sceneCharacter) {
@@ -2379,6 +2428,202 @@ function dialogueTargetsCharacter(dialogue, sceneCharacter) {
     ...String(registered?.aliases || "").split(",").map(alias => alias.trim()),
   ];
   return names.some(value => normalizeName(value) === speakerKey);
+}
+
+function spriteAlphaCacheKey(image) {
+  return image?.currentSrc || image?.src || "";
+}
+
+function prepareSpriteAlphaMask(image) {
+  const key = spriteAlphaCacheKey(image);
+  if (!key) return null;
+  const cached = spriteAlphaMaskCache.get(key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached;
+  }
+
+  const entry = {
+    status: "loading",
+    width: 0,
+    height: 0,
+    alpha: null,
+    lastUsed: Date.now(),
+    promise: null,
+  };
+  spriteAlphaMaskCache.set(key, entry);
+  entry.promise = (async () => {
+    if (!image.complete || !image.naturalWidth || !image.naturalHeight) {
+      await new Promise((resolve, reject) => {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", () => reject(new Error("Sprite image failed to load.")), { once: true });
+      });
+    }
+    if (typeof image.decode === "function") {
+      await image.decode().catch(() => {});
+    }
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    if (!width || !height) throw new Error("Sprite image has no readable dimensions.");
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("Canvas 2D is unavailable.");
+    context.drawImage(image, 0, 0, width, height);
+    const rgba = context.getImageData(0, 0, width, height).data;
+    const alpha = new Uint8Array(width * height);
+    for (let source = 3, target = 0; source < rgba.length; source += 4, target += 1) {
+      alpha[target] = rgba[source];
+    }
+    entry.status = "ready";
+    entry.width = width;
+    entry.height = height;
+    entry.alpha = alpha;
+    pruneSpriteAlphaMaskCache(key);
+    return entry;
+  })().catch(error => {
+    entry.status = "error";
+    entry.error = error;
+    return entry;
+  });
+  return entry;
+}
+
+function pruneSpriteAlphaMaskCache(activeKey = "") {
+  if (spriteAlphaMaskCache.size <= SPRITE_ALPHA_CACHE_LIMIT) return;
+  const removable = [...spriteAlphaMaskCache.entries()]
+    .filter(([key, entry]) => key !== activeKey && entry.status !== "loading")
+    .sort((left, right) => left[1].lastUsed - right[1].lastUsed);
+  while (spriteAlphaMaskCache.size > SPRITE_ALPHA_CACHE_LIMIT && removable.length) {
+    spriteAlphaMaskCache.delete(removable.shift()[0]);
+  }
+}
+
+function pointInsideRect(clientX, clientY, rect) {
+  return rect.width > 0 && rect.height > 0 && clientX >= rect.left && clientX < rect.right && clientY >= rect.top && clientY < rect.bottom;
+}
+
+function spriteImageHasVisiblePixel(image, clientX, clientY) {
+  const imageRect = image.getBoundingClientRect();
+  if (!pointInsideRect(clientX, clientY, imageRect)) return false;
+  const frame = image.closest(".scene-sprite-frame");
+  if (frame?.classList.contains("close") && !pointInsideRect(clientX, clientY, frame.getBoundingClientRect())) return false;
+  const mask = prepareSpriteAlphaMask(image);
+  if (!mask || mask.status !== "ready" || !mask.alpha) return false;
+  const sourceX = Math.min(mask.width - 1, Math.max(0, Math.floor(((clientX - imageRect.left) / imageRect.width) * mask.width)));
+  const sourceY = Math.min(mask.height - 1, Math.max(0, Math.floor(((clientY - imageRect.top) / imageRect.height) * mask.height)));
+  return mask.alpha[(sourceY * mask.width) + sourceX] > SPRITE_ALPHA_HIT_THRESHOLD;
+}
+
+function alphaHitTestSprite(view, clientX, clientY) {
+  const candidates = [...view.querySelectorAll('.scene-sprite-frame[data-sprite-alpha-hit="true"]')]
+    .map((frame, index) => ({
+      frame,
+      index,
+      zIndex: Number.parseInt(getComputedStyle(frame).zIndex, 10) || 0,
+    }))
+    .sort((left, right) => right.zIndex - left.zIndex || right.index - left.index);
+  for (const candidate of candidates) {
+    const frameStyle = getComputedStyle(candidate.frame);
+    if (frameStyle.visibility === "hidden" || Number.parseFloat(frameStyle.opacity || "1") <= 0.05) continue;
+    const image = candidate.frame.querySelector(".scene-sprite:not(.expression-old)");
+    if (image && spriteImageHasVisiblePixel(image, clientX, clientY)) return candidate.frame;
+  }
+  return null;
+}
+
+function ensureSpriteAlphaTooltip(view) {
+  let tooltip = view.querySelector(".sprite-alpha-tooltip");
+  if (tooltip) return tooltip;
+  tooltip = document.createElement("div");
+  tooltip.className = "sprite-alpha-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.setAttribute("aria-hidden", "true");
+  view.appendChild(tooltip);
+  return tooltip;
+}
+
+function setAlphaHoveredSprite(view, frame, clientX = 0, clientY = 0) {
+  view.querySelectorAll(".scene-sprite-frame.sprite-alpha-hover").forEach(item => {
+    if (item !== frame) item.classList.remove("sprite-alpha-hover");
+  });
+  if (frame) frame.classList.add("sprite-alpha-hover");
+  view.classList.toggle("sprite-alpha-pointer", Boolean(frame));
+  const tooltip = ensureSpriteAlphaTooltip(view);
+  if (!frame) {
+    tooltip.classList.remove("visible");
+    tooltip.setAttribute("aria-hidden", "true");
+    return;
+  }
+  const viewRect = view.getBoundingClientRect();
+  tooltip.textContent = frame.title || `Ouvir ${frame.dataset.name || "personagem"} agora`;
+  tooltip.style.left = `${clientX - viewRect.left}px`;
+  tooltip.style.top = `${Math.max(42, clientY - viewRect.top - 12)}px`;
+  tooltip.classList.add("visible");
+  tooltip.setAttribute("aria-hidden", "false");
+  const tooltipRect = tooltip.getBoundingClientRect();
+  let correction = 0;
+  if (tooltipRect.left < viewRect.left + 8) correction = (viewRect.left + 8) - tooltipRect.left;
+  if (tooltipRect.right > viewRect.right - 8) correction = (viewRect.right - 8) - tooltipRect.right;
+  if (correction) tooltip.style.left = `${clientX - viewRect.left + correction}px`;
+}
+
+function spriteHitTestBlockedTarget(target) {
+  return target instanceof Element && Boolean(target.closest(
+    "button, a, input, textarea, select, [data-action], [data-drawer], .vn-dialogue, .vn-toolbar, .vn-action-menu, .sprite-edit-panel, .drawer, .modal-backdrop"
+  ));
+}
+
+function bindSpriteAlphaHitTesting() {
+  const view = document.querySelector(".vn-view");
+  const layer = view?.querySelector(".sprite-layer");
+  if (!view || !layer) return;
+
+  let pendingFrame = 0;
+  let pointer = null;
+  const refreshHover = () => {
+    pendingFrame = 0;
+    if (!pointer || spriteHitTestBlockedTarget(pointer.target) || !pointInsideRect(pointer.x, pointer.y, layer.getBoundingClientRect())) {
+      setAlphaHoveredSprite(view, null);
+      return;
+    }
+    setAlphaHoveredSprite(view, alphaHitTestSprite(view, pointer.x, pointer.y), pointer.x, pointer.y);
+  };
+  const queueHoverRefresh = () => {
+    if (!pendingFrame) pendingFrame = requestAnimationFrame(refreshHover);
+  };
+  const frames = [...view.querySelectorAll('.scene-sprite-frame[data-sprite-alpha-hit="true"]')];
+  frames.forEach(frame => {
+    const image = frame.querySelector(".scene-sprite:not(.expression-old)");
+    const mask = image ? prepareSpriteAlphaMask(image) : null;
+    if (mask?.promise) mask.promise.then(queueHoverRefresh);
+    frame.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectSpriteSpeaker(frame.dataset.name || "");
+    });
+  });
+  view.addEventListener("pointermove", event => {
+    if (event.pointerType && event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+    pointer = { x: event.clientX, y: event.clientY, target: event.target };
+    queueHoverRefresh();
+  });
+  view.addEventListener("pointerleave", () => {
+    pointer = null;
+    if (pendingFrame) cancelAnimationFrame(pendingFrame);
+    pendingFrame = 0;
+    setAlphaHoveredSprite(view, null);
+  });
+  view.addEventListener("click", event => {
+    if (event.button !== 0 || spriteHitTestBlockedTarget(event.target)) return;
+    if (!pointInsideRect(event.clientX, event.clientY, layer.getBoundingClientRect())) return;
+    const frame = alphaHitTestSprite(view, event.clientX, event.clientY);
+    if (!frame) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectSpriteSpeaker(frame.dataset.name || "");
+  }, true);
 }
 
 function selectedNextSpeakerName(scene = latestScene(state.activeStory)) {
@@ -2752,17 +2997,28 @@ function renderAppearanceDesignerDrawer() {
           </div>
         ` : `<div class="sprite-empty">Nenhuma aparência gerada ainda.</div>`}
       </section>
-      <form id="appearance-designer-form" class="appearance-section appearance-change-form" data-character-id="${escapeAttr(character.id)}" data-reference-asset-id="${escapeAttr(referenceSprite?.id || "")}">
+      <div class="style-tabs appearance-mode-tabs" role="tablist" aria-label="Quantidade de referencias">
+        <button type="button" class="${state.appearanceDesignerTab === "single" ? "active" : ""}" data-action="appearance-mode-tab" data-tab="single">Uma Referência</button>
+        <button type="button" class="${state.appearanceDesignerTab === "double" ? "active" : ""}" data-action="appearance-mode-tab" data-tab="double">Duas Referências</button>
+      </div>
+      <form id="appearance-designer-form" class="appearance-section appearance-change-form" data-character-id="${escapeAttr(character.id)}" data-reference-asset-id="${escapeAttr(referenceSprite?.id || "")}" data-mode="${escapeAttr(state.appearanceDesignerTab)}">
         <h3>O que mudar</h3>
-        ${style.appearance_workbench ? "" : `<p class="small-text">Configure o Workflow de Alterar Aparência no estilo atual antes de gerar.</p>`}
-        <label for="appearance-change-prompt">Prompt do usuário</label>
-        <textarea id="appearance-change-prompt" name="prompt" rows="5" placeholder="Ex: trocar a roupa por uma armadura escura"></textarea>
+        ${state.appearanceDesignerTab === "double"
+          ? (style.appearance_reference_workbench ? "" : `<p class="small-text">Configure o Workflow de Alterar Aparência Com Referência no estilo atual antes de gerar.</p>`)
+          : (style.appearance_workbench ? "" : `<p class="small-text">Configure o Workflow de Alterar Aparência no estilo atual antes de gerar.</p>`)}
+        <div class="${state.appearanceDesignerTab === "double" ? "appearance-double-layout" : ""}">
+          ${state.appearanceDesignerTab === "double" ? renderSelectedStoryReference(state.appearanceReferenceId, "designer") : ""}
+          <div class="field">
+            <label for="appearance-change-prompt">Prompt do usuário</label>
+            <textarea id="appearance-change-prompt" name="prompt" rows="5" placeholder="Ex: trocar a roupa por uma armadura escura">${escapeHtml(state.appearancePrompt || "")}</textarea>
+          </div>
+        </div>
         <label class="check-row">
-          <input type="checkbox" name="improve_prompt" value="true" checked>
+          <input type="checkbox" name="improve_prompt" value="true" ${state.appearanceImprovePrompt ? "checked" : ""}>
           <span>Melhorar prompt antes de enviar</span>
         </label>
         <div class="mini-actions">
-          <button type="submit" class="primary" ${style.appearance_workbench && referenceSprite?.id ? "" : "disabled"}>Gerar</button>
+          <button type="submit" class="primary" ${referenceSprite?.id && (state.appearanceDesignerTab === "double" ? style.appearance_reference_workbench && state.appearanceReferenceId : style.appearance_workbench) ? "" : "disabled"}>Gerar</button>
         </div>
       </form>
     </div>
@@ -3262,12 +3518,20 @@ function renderAppearanceRegenerateModal() {
             })).join("")}
           </div>
         </section>
+        <div class="style-tabs appearance-mode-tabs" role="tablist" aria-label="Quantidade de referencias">
+          <button type="button" class="${modal.mode !== "double" ? "active" : ""}" data-action="regenerate-mode-tab" data-tab="single">Uma Referência</button>
+          <button type="button" class="${modal.mode === "double" ? "active" : ""}" data-action="regenerate-mode-tab" data-tab="double">Duas Referências</button>
+        </div>
         <section class="appearance-section">
           <h3>O que mudar</h3>
-          <div class="field">
-            <label for="appearance-regenerate-prompt">Prompt do usuário</label>
-            <textarea id="appearance-regenerate-prompt" name="prompt" rows="6">${escapeHtml(modal.value || "")}</textarea>
-            ${modal.error ? `<small class="field-error">${escapeHtml(modal.error)}</small>` : ""}
+          ${modal.mode === "double" && !style.appearance_reference_workbench ? `<p class="field-error">Configure o Workflow de Alterar Aparência Com Referência no estilo atual antes de regenerar.</p>` : ""}
+          <div class="${modal.mode === "double" ? "appearance-double-layout" : ""}">
+            ${modal.mode === "double" ? renderSelectedStoryReference(modal.additionalReferenceId || "", "regenerate") : ""}
+            <div class="field">
+              <label for="appearance-regenerate-prompt">Prompt do usuário</label>
+              <textarea id="appearance-regenerate-prompt" name="prompt" rows="6">${escapeHtml(modal.value || "")}</textarea>
+              ${modal.error ? `<small class="field-error">${escapeHtml(modal.error)}</small>` : ""}
+            </div>
           </div>
           <label class="check-row">
             <input type="checkbox" name="improve_prompt" value="true" ${modal.improvePrompt === false ? "" : "checked"}>
@@ -3275,7 +3539,7 @@ function renderAppearanceRegenerateModal() {
           </label>
           <div class="mini-actions">
             <button type="button" data-action="close-modal">Cancelar</button>
-            <button class="primary" type="submit" ${style.appearance_workbench ? "" : "disabled"}>${state.busy ? "Enviando..." : "Enviar"}</button>
+            <button class="primary" type="submit" ${(modal.mode === "double" ? style.appearance_reference_workbench && modal.additionalReferenceId : style.appearance_workbench) ? "" : "disabled"}>${state.busy ? "Enviando..." : "Enviar"}</button>
           </div>
         </section>
       </form>
@@ -3283,7 +3547,191 @@ function renderAppearanceRegenerateModal() {
   `;
 }
 
+function storyReferenceById(referenceId) {
+  return (state.storyReferences || []).find(item => item.id === referenceId) || null;
+}
+
+function normalizeReferenceName(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+
+function renderSelectedStoryReference(referenceId, context) {
+  const reference = storyReferenceById(referenceId);
+  return `
+    <div class="appearance-reference-slot">
+      ${reference?.url
+        ? `<img src="${escapeAttr(reference.url)}" alt="${escapeAttr(reference.label || "Referência")}"><span>${escapeHtml(reference.label || "Referência")}</span>`
+        : `<div class="appearance-reference-empty">Nenhuma referência selecionada</div>`}
+      <button type="button" data-action="open-story-references" data-context="${escapeAttr(context)}">Carregar/selecionar referência</button>
+    </div>
+  `;
+}
+
+function renderStoryReferencesModal() {
+  const picker = state.referencePicker || {};
+  if (picker.previewReferenceId) {
+    const reference = storyReferenceById(picker.previewReferenceId);
+    return `
+      <div class="modal-backdrop">
+        <div class="modal sprite-preview-modal" role="dialog" aria-modal="true" aria-label="Visualizar referência">
+          <div class="sprite-preview-head">
+            <h2>${escapeHtml(reference?.label || "Referência")}</h2>
+            <button type="button" data-action="close-reference-preview">Fechar</button>
+          </div>
+          <div class="sprite-preview-stage"><img src="${escapeAttr(reference?.url || "")}" alt="${escapeAttr(reference?.label || "Referência")}"></div>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="modal-backdrop">
+      <div class="modal story-references-modal" role="dialog" aria-modal="true" aria-label="Referências">
+        <div class="sprite-preview-head">
+          <h2>Referências</h2>
+          <button type="button" class="modal-x-button" data-action="cancel-story-references" aria-label="Fechar">X</button>
+        </div>
+        <input id="story-reference-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <div class="mini-actions"><button type="button" data-action="add-story-reference">Adicionar</button></div>
+        ${state.storyReferences.length ? `
+          <div class="story-reference-grid">
+            ${state.storyReferences.map(reference => `
+              <figure class="story-reference-card ${picker.selectedId === reference.id ? "selected" : ""}">
+                <button type="button" class="reference-delete-button" data-action="delete-story-reference" data-reference-id="${escapeAttr(reference.id)}" title="Excluir referência"><img src="/icons/trash.png" alt=""></button>
+                <button type="button" class="reference-preview-button" data-action="preview-story-reference" data-reference-id="${escapeAttr(reference.id)}" title="Ampliar referência"><img src="/icons/ampliar.png" alt=""></button>
+                <button type="button" class="story-reference-select" data-action="select-story-reference" data-reference-id="${escapeAttr(reference.id)}">
+                  <img src="${escapeAttr(reference.url)}" alt="${escapeAttr(reference.label || "Referência")}">
+                </button>
+                <div class="story-reference-name-row">
+                  <button type="button" class="reference-name-action" data-action="${state.referenceEditingId === reference.id ? "save-reference-name" : "edit-reference-name"}" data-reference-id="${escapeAttr(reference.id)}" title="${state.referenceEditingId === reference.id ? "Salvar nome" : "Renomear referência"}">
+                    <img src="/icons/${state.referenceEditingId === reference.id ? "save.webp" : "edit.webp"}" alt="">
+                  </button>
+                  ${state.referenceEditingId === reference.id
+                    ? `<input class="story-reference-name-input" data-reference-name-input="${escapeAttr(reference.id)}" value="${escapeAttr(reference.label || "")}" maxlength="80">`
+                    : `<span>${escapeHtml(reference.label || "Referência")}</span>`}
+                </div>
+              </figure>`).join("")}
+          </div>` : `<div class="empty-state">Ainda não existem referências nesta história. Use Adicionar para carregar a primeira imagem.</div>`}
+        ${picker.context === "management" ? "" : `<div class="mini-actions reference-modal-actions">
+          <button type="button" class="primary" data-action="confirm-story-reference" ${picker.selectedId ? "" : "disabled"}>OK</button>
+        </div>`}
+      </div>
+    </div>`;
+}
+
+function renderMissingStoryReferenceModal() {
+  const name = state.modal?.referenceName || "";
+  return `
+    <div class="modal-backdrop">
+      <div class="modal compact-modal" role="dialog" aria-modal="true" aria-label="Referência não encontrada">
+        <div class="sprite-preview-head">
+          <h2>Referência não encontrada</h2>
+        </div>
+        <p>A referência "${escapeHtml(name)}" não existe. Deseja adicioná-la agora?</p>
+        <div class="mini-actions">
+          <button type="button" data-action="decline-missing-story-reference" ${state.busy ? "disabled" : ""}>Não</button>
+          <button type="button" class="primary" data-action="add-missing-story-reference" ${state.busy ? "disabled" : ""}>Sim</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function selectedStoryScenario() {
+  const scenarios = state.activeStory?.scenarios || [];
+  return scenarios.find(item => item.id === state.selectedScenarioId)
+    || scenarios.find(item => item.is_active)
+    || scenarios[0]
+    || null;
+}
+
+function renderScenariosModal() {
+  const scenarios = state.activeStory?.scenarios || [];
+  const selected = selectedStoryScenario();
+  if (selected && state.selectedScenarioId !== selected.id) state.selectedScenarioId = selected.id;
+  return `
+    <div class="modal-backdrop">
+      <div class="modal scenarios-modal" role="dialog" aria-modal="true" aria-label="Cenários">
+        <div class="sprite-preview-head">
+          <h2>Cenários</h2>
+          <button type="button" data-action="close-modal">Fechar</button>
+        </div>
+        ${selected ? `
+          <section class="scenario-main">
+            <h3>${escapeHtml(selected.name || "Cenário")}</h3>
+            <button type="button" class="scenario-main-image" data-action="preview-scenario" data-scenario-id="${escapeAttr(selected.id)}" ${selected.url ? "" : "disabled"}>
+              ${selected.url ? `<img src="${escapeAttr(selected.url)}" alt="${escapeAttr(selected.name || "Cenário")}">` : `<span>Imagem ainda não disponível.</span>`}
+            </button>
+            <p>${escapeHtml(selected.description || "Sem descrição.")}</p>
+            <div class="mini-actions scenario-main-actions">
+              <button type="button" class="primary" data-action="activate-scenario" data-scenario-id="${escapeAttr(selected.id)}" ${selected.is_active || !selected.url || state.busy ? "disabled" : ""}>${selected.is_active ? "Cenário ativo" : "Tornar cenário ativo"}</button>
+              <button type="button" data-action="open-regenerate-scenario" data-scenario-id="${escapeAttr(selected.id)}" ${!selected.url || state.busy ? "disabled" : ""}>Regerar</button>
+              <button type="button" class="danger" data-action="delete-scenario" data-scenario-id="${escapeAttr(selected.id)}" ${state.busy ? "disabled" : ""}>Deletar</button>
+            </div>
+          </section>
+          <div class="scenario-carousel" aria-label="Cenários existentes">
+            ${scenarios.map(scenario => `
+              <button type="button" class="scenario-card ${scenario.is_active ? "active" : ""} ${scenario.id === selected.id ? "selected" : ""}" data-action="select-scenario" data-scenario-id="${escapeAttr(scenario.id)}">
+                ${scenario.url ? `<img src="${escapeAttr(scenario.url)}" alt="">` : `<span class="scenario-card-empty">Sem imagem</span>`}
+                <strong>${escapeHtml(scenario.name || "Cenário")}</strong>
+                ${scenario.is_active ? `<small>Ativo</small>` : ""}
+              </button>`).join("")}
+          </div>
+        ` : `<div class="empty-state">Nenhum cenário foi criado ainda.</div>`}
+        <div class="mini-actions scenario-footer-actions">
+          <button type="button" class="primary" data-action="open-create-scenario" ${state.busy ? "disabled" : ""}>Criar Cenário</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderCreateScenarioModal() {
+  const modal = state.modal || {};
+  return `
+    <div class="modal-backdrop">
+      <form class="modal scenario-form-modal" id="create-scenario-form">
+        <div class="sprite-preview-head"><h2>Criar Cenário</h2><button type="button" data-action="return-scenarios">Fechar</button></div>
+        <div class="field"><label for="scenario-create-name">Nome do Cenário</label><input id="scenario-create-name" name="name" value="${escapeAttr(modal.name || "")}" required></div>
+        <div class="field"><label for="scenario-create-description">Descrição do Cenário</label><textarea id="scenario-create-description" name="description" rows="5" required>${escapeHtml(modal.description || "")}</textarea></div>
+        <label class="check-row"><input type="checkbox" id="scenario-manual-prompt" name="manual_prompt" value="true" ${modal.manualPrompt ? "checked" : ""}><span>Escrever prompt manualmente</span></label>
+        <div class="field scenario-manual-prompt-field ${modal.manualPrompt ? "" : "hidden"}"><label for="scenario-create-prompt">Prompt manual</label><textarea id="scenario-create-prompt" name="prompt" rows="5">${escapeHtml(modal.prompt || "")}</textarea></div>
+        <label class="check-row"><input type="checkbox" name="improve_prompt" value="true" ${modal.improvePrompt === false ? "" : "checked"}><span>Melhorar prompt</span></label>
+        ${modal.error ? `<p class="field-error">${escapeHtml(modal.error)}</p>` : ""}
+        <div class="mini-actions"><button type="button" data-action="return-scenarios">Cancelar</button><button type="submit" class="primary" ${state.busy ? "disabled" : ""}>${state.busy ? "Criando..." : "Criar"}</button></div>
+      </form>
+    </div>`;
+}
+
+function renderRegenerateScenarioModal() {
+  const modal = state.modal || {};
+  const scenario = (state.activeStory?.scenarios || []).find(item => item.id === modal.scenarioId);
+  if (!scenario) return "";
+  return `
+    <div class="modal-backdrop">
+      <form class="modal scenario-form-modal" id="regenerate-scenario-form">
+        <div class="sprite-preview-head"><div><h2>Regerar Cenário</h2><span>${escapeHtml(scenario.name || "Cenário")}</span></div><button type="button" data-action="return-scenarios">Fechar</button></div>
+        <label class="check-row"><input type="checkbox" id="scenario-change-prompt" name="change_prompt" value="true" ${modal.changePrompt ? "checked" : ""}><span>Alterar prompt de geração</span></label>
+        <div class="field scenario-change-prompt-field ${modal.changePrompt ? "" : "hidden"}"><label for="scenario-regenerate-prompt">Novo prompt</label><textarea id="scenario-regenerate-prompt" name="prompt" rows="6">${escapeHtml(modal.prompt || "")}</textarea></div>
+        <label class="check-row"><input type="checkbox" name="improve_prompt" value="true" ${modal.improvePrompt === false ? "" : "checked"}><span>Melhorar prompt</span></label>
+        <p class="small-text">Sem alteração manual, será reutilizado o prompt salvo do cenário.</p>
+        ${modal.error ? `<p class="field-error">${escapeHtml(modal.error)}</p>` : ""}
+        <div class="mini-actions"><button type="button" data-action="return-scenarios">Cancelar</button><button type="submit" class="primary" ${state.busy ? "disabled" : ""}>${state.busy ? "Regerando..." : "Regerar"}</button></div>
+      </form>
+    </div>`;
+}
+
 function renderModal() {
+  if (state.modal.type === "scenarios") return renderScenariosModal();
+  if (state.modal.type === "scenarioCreate") return renderCreateScenarioModal();
+  if (state.modal.type === "scenarioRegenerate") return renderRegenerateScenarioModal();
+  if (state.modal.type === "scenarioPreview") {
+    const scenario = (state.activeStory?.scenarios || []).find(item => item.id === state.modal.scenarioId);
+    return `
+      <div class="modal-backdrop"><div class="modal sprite-preview-modal"><div class="sprite-preview-head"><h2>${escapeHtml(scenario?.name || "Cenário")}</h2><button type="button" data-action="return-scenarios">Fechar</button></div><div class="sprite-preview-stage"><img src="${escapeAttr(scenario?.url || "")}" alt="${escapeAttr(scenario?.name || "Cenário")}"></div></div></div>`;
+  }
+  if (state.modal.type === "storyReferences") {
+    return renderStoryReferencesModal();
+  }
+  if (state.modal.type === "missingStoryReference") {
+    return renderMissingStoryReferenceModal();
+  }
   if (state.modal.type === "spritePreview") {
     const sprite = state.modal.sprite || {};
     return `
@@ -3491,6 +3939,7 @@ function renderModal() {
 }
 
 function bindEvents() {
+  bindSpriteAlphaHitTesting();
   document.querySelectorAll("[data-action]").forEach(element => {
     element.addEventListener("click", handleAction);
   });
@@ -3602,7 +4051,10 @@ function bindEvents() {
   document.querySelectorAll(".style-prompt-commands-toggle").forEach(toggle => {
     toggle.addEventListener("change", () => {
       state.styleDraft = collectStyleDraft(styleForm);
-      state.stylePromptCommandsVisible = toggle.checked;
+      state.stylePromptCommandsVisible = {
+        ...(state.stylePromptCommandsVisible || {}),
+        [normalizeStylePromptAssetType(toggle.dataset.assetType || "sprite")]: toggle.checked,
+      };
       render();
     });
   });
@@ -3618,6 +4070,28 @@ function bindEvents() {
   if (appearanceDesignerForm) appearanceDesignerForm.addEventListener("submit", generateCharacterAppearance);
   const appearanceRegenerateForm = document.getElementById("appearance-regenerate-form");
   if (appearanceRegenerateForm) appearanceRegenerateForm.addEventListener("submit", regenerateExistingAppearance);
+  const storyReferenceUpload = document.getElementById("story-reference-upload");
+  if (storyReferenceUpload) storyReferenceUpload.addEventListener("change", uploadStoryReference);
+  document.querySelectorAll("[data-reference-name-input]").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        saveStoryReferenceName(input.dataset.referenceNameInput || "");
+      }
+    });
+  });
+  const createScenarioForm = document.getElementById("create-scenario-form");
+  if (createScenarioForm) createScenarioForm.addEventListener("submit", createStoryScenario);
+  const regenerateScenarioForm = document.getElementById("regenerate-scenario-form");
+  if (regenerateScenarioForm) regenerateScenarioForm.addEventListener("submit", regenerateStoryScenario);
+  const scenarioManualPrompt = document.getElementById("scenario-manual-prompt");
+  if (scenarioManualPrompt) scenarioManualPrompt.addEventListener("change", () => {
+    document.querySelector(".scenario-manual-prompt-field")?.classList.toggle("hidden", !scenarioManualPrompt.checked);
+  });
+  const scenarioChangePrompt = document.getElementById("scenario-change-prompt");
+  if (scenarioChangePrompt) scenarioChangePrompt.addEventListener("change", () => {
+    document.querySelector(".scenario-change-prompt-field")?.classList.toggle("hidden", !scenarioChangePrompt.checked);
+  });
   const appearanceCharacterSelect = document.querySelector('[data-action="select-appearance-character"]');
   if (appearanceCharacterSelect) {
     appearanceCharacterSelect.addEventListener("change", () => {
@@ -3762,7 +4236,7 @@ async function handleAction(event) {
     state.styleTab = "sprites";
     state.styleSpriteAdvanced = false;
     state.styleBackgroundAdvanced = false;
-    state.stylePromptCommandsVisible = false;
+    state.stylePromptCommandsVisible = {};
     state.stylePromptTest = { assetType: "appearance", appearance: "", clothing: "", result: "" };
     render();
   }
@@ -3773,7 +4247,7 @@ async function handleAction(event) {
     state.styleTab = "sprites";
     state.styleSpriteAdvanced = false;
     state.styleBackgroundAdvanced = false;
-    state.stylePromptCommandsVisible = false;
+    state.stylePromptCommandsVisible = {};
     state.stylePromptTest = { assetType: "appearance", appearance: "", clothing: "", result: "" };
     render();
   }
@@ -3890,6 +4364,35 @@ async function handleAction(event) {
   if (action === "select-regenerate-reference") {
     event.stopPropagation();
     selectRegenerateReference(event.currentTarget.dataset.appearanceId || "");
+  }
+  if (action === "appearance-mode-tab") switchAppearanceDesignerMode(event.currentTarget.dataset.tab || "single");
+  if (action === "regenerate-mode-tab") switchRegenerateMode(event.currentTarget.dataset.tab || "single");
+  if (action === "open-story-references") openStoryReferences(event.currentTarget.dataset.context || "designer");
+  if (action === "open-references-menu") openStoryReferences("management");
+  if (action === "cancel-story-references") cancelStoryReferences();
+  if (action === "confirm-story-reference") confirmStoryReference();
+  if (action === "add-story-reference") document.getElementById("story-reference-upload")?.click();
+  if (action === "select-story-reference") selectStoryReference(event.currentTarget.dataset.referenceId || "");
+  if (action === "preview-story-reference") previewStoryReference(event.currentTarget.dataset.referenceId || "");
+  if (action === "close-reference-preview") closeStoryReferencePreview();
+  if (action === "delete-story-reference") deleteStoryReference(event.currentTarget.dataset.referenceId || "");
+  if (action === "edit-reference-name") editStoryReferenceName(event.currentTarget.dataset.referenceId || "");
+  if (action === "save-reference-name") saveStoryReferenceName(event.currentTarget.dataset.referenceId || "");
+  if (action === "decline-missing-story-reference") resolveMissingStoryReferenceDecision("decline");
+  if (action === "add-missing-story-reference") addMissingStoryReference();
+  if (action === "open-scenarios") openScenariosModal();
+  if (action === "select-scenario") selectStoryScenario(event.currentTarget.dataset.scenarioId || "");
+  if (action === "activate-scenario") activateStoryScenario(event.currentTarget.dataset.scenarioId || "");
+  if (action === "delete-scenario") deleteStoryScenario(event.currentTarget.dataset.scenarioId || "");
+  if (action === "open-create-scenario") openCreateScenarioModal();
+  if (action === "open-regenerate-scenario") openRegenerateScenarioModal(event.currentTarget.dataset.scenarioId || "");
+  if (action === "preview-scenario") {
+    state.modal = { type: "scenarioPreview", scenarioId: event.currentTarget.dataset.scenarioId || "" };
+    render();
+  }
+  if (action === "return-scenarios") {
+    state.modal = { type: "scenarios" };
+    render();
   }
   if (action === "set-active-appearance") setActiveAppearance(event.currentTarget.dataset.characterId || "", event.currentTarget.dataset.appearanceId || "");
   if (action === "add-character-to-scene") addCharacterToCurrentScene();
@@ -4413,6 +4916,7 @@ function collectStyleDraft(form) {
     sprite_workbench: styleFormValue(data, "sprite_workbench", current.sprite_workbench),
     background_workbench: styleFormValue(data, "background_workbench", current.background_workbench),
     appearance_workbench: styleFormValue(data, "appearance_workbench", current.appearance_workbench),
+    appearance_reference_workbench: styleFormValue(data, "appearance_reference_workbench", current.appearance_reference_workbench),
     background_prompt_prefix: styleFormValue(data, "background_prompt_prefix", current.background_prompt_prefix),
     background_prompt_suffix: styleFormValue(data, "background_prompt_suffix", current.background_prompt_suffix),
     background_negative_prompt: styleFormValue(data, "background_negative_prompt", current.background_negative_prompt),
@@ -4422,6 +4926,8 @@ function collectStyleDraft(form) {
     background_prompt_example: styleFormValue(data, "background_prompt_example", current.background_prompt_example),
     appearance_prompt_command: styleFormValue(data, "appearance_prompt_command", current.appearance_prompt_command),
     appearance_prompt_example: styleFormValue(data, "appearance_prompt_example", current.appearance_prompt_example),
+    appearance_reference_prompt_command: styleFormValue(data, "appearance_reference_prompt_command", current.appearance_reference_prompt_command),
+    appearance_reference_prompt_example: styleFormValue(data, "appearance_reference_prompt_example", current.appearance_reference_prompt_example),
     expressions_enabled: styleFormBool(data, "expressions_enabled", current.expressions_enabled === true),
     expression_workbench: styleFormValue(data, "expression_workbench", current.expression_workbench),
     advanced_settings: advanced,
@@ -4834,12 +5340,27 @@ async function selectSpriteSpeaker(name) {
 
 async function generateScene(userInput, options = {}) {
   if (!state.activeStory) return;
+  let preparedInput;
+  try {
+    preparedInput = options.preparedInput || await prepareStoryInputReference(userInput);
+  } catch (error) {
+    alert(error.message);
+    return;
+  }
+  if (!preparedInput) return;
   const speakerFocus = options.speakerFocus || selectedNextSpeakerName();
+  let retryPreparedInput = null;
   setBusy(true, "Gerando resposta com IA...");
   try {
     state.activeStory = await api(`/api/stories/${state.activeStory.id}/generate-scene`, {
       method: "POST",
-      body: JSON.stringify({ user_input: userInput, speaker_focus: speakerFocus, generate_images: true }),
+      body: JSON.stringify({
+        user_input: preparedInput.text,
+        speaker_focus: speakerFocus,
+        generate_images: true,
+        appearance_reference_id: preparedInput.reference?.id || "",
+        appearance_reference_name: preparedInput.reference?.label || "",
+      }),
     });
     state.nextSpeakerFocus = null;
     const autoBackground = state.activeStory.auto_background;
@@ -4849,10 +5370,23 @@ async function generateScene(userInput, options = {}) {
       await loadStory(state.activeStory.id);
     }
   } catch (error) {
-    if (options.clearFocusOnError) state.nextSpeakerFocus = null;
-    alert(error.message);
+    if (error.code === "story_reference_missing" && error.referenceName) {
+      setBusy(false);
+      const decision = await requestMissingStoryReferenceDecision(error.referenceName);
+      if (decision.action === "decline") {
+        retryPreparedInput = { text: error.cleanUserInput, reference: null };
+      } else if (decision.action === "added" && decision.reference) {
+        retryPreparedInput = { text: error.cleanUserInput, reference: decision.reference };
+      }
+    } else {
+      if (options.clearFocusOnError) state.nextSpeakerFocus = null;
+      alert(error.message);
+    }
   } finally {
     setBusy(false);
+  }
+  if (retryPreparedInput) {
+    await generateScene(retryPreparedInput.text, { ...options, preparedInput: retryPreparedInput });
   }
 }
 
@@ -4905,14 +5439,31 @@ async function regenerateCurrentSceneWithInput(event) {
   await regenerateCurrentSceneRequest({ user_input: userInput });
 }
 
-async function regenerateCurrentSceneRequest(payload = {}) {
+async function regenerateCurrentSceneRequest(payload = {}, preparedOverride = null) {
   const story = state.activeStory;
   if (!story) return;
+  let requestPayload = { ...payload };
+  if (Object.prototype.hasOwnProperty.call(payload, "user_input")) {
+    try {
+      const preparedInput = preparedOverride || await prepareStoryInputReference(payload.user_input);
+      if (!preparedInput) return;
+      requestPayload = {
+        ...requestPayload,
+        user_input: preparedInput.text,
+        appearance_reference_id: preparedInput.reference?.id || "",
+        appearance_reference_name: preparedInput.reference?.label || "",
+      };
+    } catch (error) {
+      alert(error.message);
+      return;
+    }
+  }
+  let retryPreparedInput = null;
   setBusy(true, "Regerando cena com IA...");
   try {
     state.activeStory = await api(`/api/stories/${story.id}/regenerate-scene`, {
       method: "POST",
-      body: JSON.stringify({ ...payload, generate_images: true }),
+      body: JSON.stringify({ ...requestPayload, generate_images: true }),
     });
     resetScenePlayback();
     state.nextSpeakerFocus = null;
@@ -4925,9 +5476,22 @@ async function regenerateCurrentSceneRequest(payload = {}) {
     }
     render();
   } catch (error) {
-    alert(error.message);
+    if (error.code === "story_reference_missing" && error.referenceName) {
+      setBusy(false);
+      const decision = await requestMissingStoryReferenceDecision(error.referenceName);
+      if (decision.action === "decline") {
+        retryPreparedInput = { text: error.cleanUserInput, reference: null };
+      } else if (decision.action === "added" && decision.reference) {
+        retryPreparedInput = { text: error.cleanUserInput, reference: decision.reference };
+      }
+    } else {
+      alert(error.message);
+    }
   } finally {
     setBusy(false);
+  }
+  if (retryPreparedInput) {
+    await regenerateCurrentSceneRequest({ ...payload, user_input: retryPreparedInput.text }, retryPreparedInput);
   }
 }
 
@@ -5385,12 +5949,436 @@ function openCharacterProfile(characterId) {
   render();
 }
 
-function openAppearanceDesigner(characterId) {
+async function loadStoryReferences() {
+  if (!state.activeStory?.id) {
+    state.storyReferences = [];
+    return;
+  }
+  const data = await api(`/api/stories/${state.activeStory.id}/references`);
+  state.storyReferences = data.references || [];
+}
+
+async function openAppearanceDesigner(characterId) {
   const character = (state.activeStory?.characters || []).find(item => item.id === characterId);
   if (character) state.activeCharacterId = character.id;
   state.drawer = "appearanceDesigner";
   state.characterEditId = "";
+  try {
+    await loadStoryReferences();
+  } catch (error) {
+    alert(error.message);
+  }
   render();
+}
+
+function preserveAppearanceFormDraft(form = document.getElementById("appearance-designer-form")) {
+  if (!form) return;
+  const data = new FormData(form);
+  state.appearancePrompt = String(data.get("prompt") || "");
+  state.appearanceImprovePrompt = data.getAll("improve_prompt").includes("true");
+}
+
+function switchAppearanceDesignerMode(mode) {
+  preserveAppearanceFormDraft();
+  state.appearanceDesignerTab = mode === "double" ? "double" : "single";
+  render();
+}
+
+function switchRegenerateMode(mode) {
+  if (!state.modal || state.modal.type !== "appearanceRegenerate") return;
+  const form = document.getElementById("appearance-regenerate-form");
+  const data = form ? new FormData(form) : null;
+  state.modal.value = data ? String(data.get("prompt") || "") : state.modal.value;
+  state.modal.improvePrompt = data ? data.getAll("improve_prompt").includes("true") : state.modal.improvePrompt;
+  state.modal.mode = mode === "double" ? "double" : "single";
+  state.modal.error = "";
+  render();
+}
+
+async function openStoryReferences(context) {
+  let parentModal = null;
+  let selectedId = state.appearanceReferenceId || "";
+  if (context === "regenerate" && state.modal?.type === "appearanceRegenerate") {
+    const form = document.getElementById("appearance-regenerate-form");
+    const data = form ? new FormData(form) : null;
+    parentModal = {
+      ...state.modal,
+      value: data ? String(data.get("prompt") || "") : state.modal.value,
+      improvePrompt: data ? data.getAll("improve_prompt").includes("true") : state.modal.improvePrompt,
+    };
+    selectedId = parentModal.additionalReferenceId || "";
+  } else {
+    preserveAppearanceFormDraft();
+  }
+  try {
+    await loadStoryReferences();
+    state.referencePicker = { context, parentModal, selectedId, previewReferenceId: "" };
+    state.referenceEditingId = "";
+    state.playMenuOpen = false;
+    state.modal = { type: "storyReferences" };
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function cancelStoryReferences() {
+  const picker = state.referencePicker;
+  state.modal = picker?.context === "regenerate" ? picker.parentModal : null;
+  state.referencePicker = null;
+  state.referenceEditingId = "";
+  render();
+}
+
+function confirmStoryReference() {
+  const picker = state.referencePicker;
+  if (!picker?.selectedId) return;
+  if (picker.context === "regenerate") {
+    state.modal = { ...picker.parentModal, additionalReferenceId: picker.selectedId, error: "" };
+  } else {
+    state.appearanceReferenceId = picker.selectedId;
+    state.modal = null;
+  }
+  state.referencePicker = null;
+  render();
+}
+
+function selectStoryReference(referenceId) {
+  if (!state.referencePicker || !storyReferenceById(referenceId)) return;
+  state.referencePicker.selectedId = referenceId;
+  render();
+}
+
+function previewStoryReference(referenceId) {
+  if (!state.referencePicker || !storyReferenceById(referenceId)) return;
+  state.referencePicker.previewReferenceId = referenceId;
+  render();
+}
+
+function closeStoryReferencePreview() {
+  if (!state.referencePicker) return;
+  state.referencePicker.previewReferenceId = "";
+  render();
+}
+
+async function uploadStoryReference(event) {
+  const file = event.currentTarget.files?.[0];
+  if (!file || !state.activeStory?.id) return;
+  setBusy(true, "Adicionando referência...");
+  try {
+    const result = await uploadStoryReferenceFile(file);
+    await loadStoryReferences();
+    if (state.referencePicker) state.referencePicker.selectedId = result.id;
+    render();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function storyReferenceMarkers(text) {
+  const source = String(text || "");
+  // Existing references may use file-derived labels with internal spaces.
+  const regex = /\[\s*([A-Za-zÀ-ÿ0-9_-]+(?:[ \t]+[A-Za-zÀ-ÿ0-9_-]+)*)\s*\]/g;
+  const markers = [];
+  for (const match of source.matchAll(regex)) {
+    const before = match.index > 0 ? source[match.index - 1] : "";
+    const afterIndex = match.index + match[0].length;
+    const after = afterIndex < source.length ? source[afterIndex] : "";
+    if (before === "[" || after === "]") continue;
+    markers.push({ raw: match[0], name: match[1].trim(), index: match.index });
+  }
+  return markers;
+}
+
+function removeStoryReferenceMarkers(text) {
+  const markers = storyReferenceMarkers(text);
+  if (!markers.length) return String(text || "");
+  let result = String(text || "");
+  for (const marker of [...markers].reverse()) {
+    result = result.slice(0, marker.index) + result.slice(marker.index + marker.raw.length);
+  }
+  return result.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.!?;:])/g, "$1").trim();
+}
+
+async function prepareStoryInputReference(userInput) {
+  const markers = storyReferenceMarkers(userInput);
+  const text = removeStoryReferenceMarkers(userInput);
+  if (!markers.length) return { text, reference: null };
+  const name = markers[0].name;
+  let reference = state.storyReferences.find(item => normalizeReferenceName(item.label) === normalizeReferenceName(name));
+  if (!reference) {
+    const decision = await requestMissingStoryReferenceDecision(name);
+    if (decision.action === "decline") return { text, reference: null };
+    if (decision.action !== "added" || !decision.reference) return null;
+    reference = decision.reference;
+  }
+  return { text, reference };
+}
+
+function requestMissingStoryReferenceDecision(name) {
+  if (pendingStoryReferenceDecision) {
+    pendingStoryReferenceDecision.resolve({ action: "cancel" });
+  }
+  return new Promise(resolve => {
+    pendingStoryReferenceDecision = { name, resolve };
+    state.modal = { type: "missingStoryReference", referenceName: name };
+    render();
+  });
+}
+
+function resolveMissingStoryReferenceDecision(action, reference = null) {
+  const pending = pendingStoryReferenceDecision;
+  if (!pending) return;
+  pendingStoryReferenceDecision = null;
+  state.modal = null;
+  render();
+  pending.resolve({ action, reference });
+}
+
+async function addMissingStoryReference() {
+  const pending = pendingStoryReferenceDecision;
+  if (!pending || state.busy) return;
+  const file = await chooseStoryReferenceFile();
+  if (!file) {
+    resolveMissingStoryReferenceDecision("cancel");
+    return;
+  }
+  let reference = null;
+  setBusy(true, `Adicionando referência ${pending.name}...`);
+  try {
+    reference = await uploadStoryReferenceFile(file, pending.name);
+    await loadStoryReferences();
+    reference = storyReferenceById(reference.id) || reference;
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+  if (reference) resolveMissingStoryReferenceDecision("added", reference);
+}
+
+function chooseStoryReferenceFile() {
+  return new Promise(resolve => {
+    const input = document.createElement("input");
+    let settled = false;
+    const finish = file => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("focus", onFocus);
+      resolve(file || null);
+    };
+    const onFocus = () => setTimeout(() => finish(input.files?.[0] || null), 300);
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.addEventListener("change", () => finish(input.files?.[0] || null), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    window.addEventListener("focus", onFocus, { once: true });
+    input.click();
+  });
+}
+
+async function uploadStoryReferenceFile(file, logicalName = "") {
+  const upload = new FormData();
+  upload.append("image", file);
+  const query = logicalName ? `?name=${encodeURIComponent(logicalName)}` : "";
+  const response = await fetch(`/api/stories/${encodeURIComponent(state.activeStory.id)}/references${query}`, { method: "POST", body: upload });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Erro ao enviar referência.");
+  return result;
+}
+
+async function deleteStoryReference(referenceId) {
+  const reference = storyReferenceById(referenceId);
+  if (!reference || !confirm(`Excluir a referência "${reference.label || "Referência"}"?`)) return;
+  try {
+    await api(`/api/story-references/${encodeURIComponent(referenceId)}`, { method: "DELETE" });
+    state.storyReferences = state.storyReferences.filter(item => item.id !== referenceId);
+    if (state.appearanceReferenceId === referenceId) state.appearanceReferenceId = "";
+    if (state.referencePicker?.selectedId === referenceId) state.referencePicker.selectedId = "";
+    if (state.referencePicker?.parentModal?.additionalReferenceId === referenceId) state.referencePicker.parentModal.additionalReferenceId = "";
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function editStoryReferenceName(referenceId) {
+  if (!storyReferenceById(referenceId)) return;
+  state.referenceEditingId = referenceId;
+  render();
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-reference-name-input="${CSS.escape(referenceId)}"]`);
+    input?.focus();
+    input?.select();
+  });
+}
+
+async function saveStoryReferenceName(referenceId) {
+  const reference = storyReferenceById(referenceId);
+  const input = document.querySelector(`[data-reference-name-input="${CSS.escape(referenceId)}"]`);
+  const label = String(input?.value || "").trim();
+  if (!reference) return;
+  if (!label) {
+    alert("O nome da referência não pode ficar vazio.");
+    return;
+  }
+  if (!/^[A-Za-zÀ-ÿ0-9_-]+(?:[ \t]+[A-Za-zÀ-ÿ0-9_-]+)*$/.test(label)) {
+    alert("Use apenas letras, números, espaços, underline e hífen no nome da referência.");
+    return;
+  }
+  const duplicate = state.storyReferences.some(item => item.id !== referenceId && normalizeReferenceName(item.label) === normalizeReferenceName(label));
+  if (duplicate) {
+    alert(`A referência "${label}" já existe.`);
+    return;
+  }
+  try {
+    await api(`/api/story-references/${encodeURIComponent(referenceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label }),
+    });
+    await loadStoryReferences();
+    state.referenceEditingId = "";
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function openScenariosModal() {
+  const scenarios = state.activeStory?.scenarios || [];
+  const selected = scenarios.find(item => item.is_active) || scenarios[0];
+  state.selectedScenarioId = selected?.id || "";
+  state.playMenuOpen = false;
+  state.modal = { type: "scenarios" };
+  render();
+}
+
+function selectStoryScenario(scenarioId) {
+  if (!(state.activeStory?.scenarios || []).some(item => item.id === scenarioId)) return;
+  state.selectedScenarioId = scenarioId;
+  render();
+}
+
+async function activateStoryScenario(scenarioId) {
+  if (!state.activeStory || !scenarioId) return;
+  setBusy(true, "Ativando cenário...");
+  try {
+    state.activeStory = await api(`/api/stories/${state.activeStory.id}/scenarios/${scenarioId}/activate`, { method: "POST", body: JSON.stringify({}) });
+    state.selectedScenarioId = scenarioId;
+    state.modal = { type: "scenarios" };
+    render();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteStoryScenario(scenarioId) {
+  const scenario = (state.activeStory?.scenarios || []).find(item => item.id === scenarioId);
+  if (!scenario || !confirm(`Deletar o cenário "${scenario.name}"? O histórico de diálogos e cenas será preservado.`)) return;
+  setBusy(true, "Deletando cenário...");
+  try {
+    const result = await api(`/api/stories/${state.activeStory.id}/scenarios/${scenarioId}`, { method: "DELETE" });
+    state.activeStory = result.story || await api(`/api/stories/${state.activeStory.id}`);
+    const next = state.activeStory.scenarios?.find(item => item.is_active) || state.activeStory.scenarios?.[0];
+    state.selectedScenarioId = next?.id || "";
+    state.modal = { type: "scenarios" };
+    render();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function openCreateScenarioModal() {
+  state.modal = { type: "scenarioCreate", name: "", description: "", prompt: "", manualPrompt: false, improvePrompt: true, error: "" };
+  render();
+}
+
+function openRegenerateScenarioModal(scenarioId) {
+  const scenario = (state.activeStory?.scenarios || []).find(item => item.id === scenarioId);
+  if (!scenario) return;
+  state.selectedScenarioId = scenarioId;
+  state.modal = { type: "scenarioRegenerate", scenarioId, prompt: "", changePrompt: false, improvePrompt: true, error: "" };
+  render();
+}
+
+async function createStoryScenario(event) {
+  event.preventDefault();
+  if (!state.activeStory) return;
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get("name") || "").trim();
+  const description = String(data.get("description") || "").trim();
+  const prompt = String(data.get("prompt") || "").trim();
+  const manualPrompt = data.getAll("manual_prompt").includes("true");
+  const improvePrompt = data.getAll("improve_prompt").includes("true");
+  if (!name || !description || (manualPrompt && !prompt)) {
+    state.modal = { type: "scenarioCreate", name, description, prompt, manualPrompt, improvePrompt, error: !name ? "Informe o nome do cenário." : !description ? "Informe a descrição do cenário." : "Informe o prompt manual." };
+    render();
+    return;
+  }
+  state.modal = { type: "scenarioCreate", name, description, prompt, manualPrompt, improvePrompt, error: "" };
+  setBusy(true, "Criando cenário no ComfyUI...");
+  try {
+    const queued = await api(`/api/stories/${state.activeStory.id}/scenarios`, {
+      method: "POST",
+      body: JSON.stringify({ name, description, prompt, manual_prompt: manualPrompt, improve_prompt: improvePrompt }),
+    });
+    await waitForAsset(queued.asset_id, "Gerando cenário no ComfyUI...");
+    const result = await api(`/api/stories/${state.activeStory.id}/scenarios/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: queued.asset_id, name, description }),
+    });
+    state.activeStory = result.story;
+    state.selectedScenarioId = result.scenario.id;
+    state.modal = { type: "scenarios" };
+    render();
+  } catch (error) {
+    state.modal = { type: "scenarioCreate", name, description, prompt, manualPrompt, improvePrompt, error: error.message };
+    render();
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function regenerateStoryScenario(event) {
+  event.preventDefault();
+  if (!state.activeStory || state.modal?.type !== "scenarioRegenerate") return;
+  const scenarioId = state.modal.scenarioId;
+  const data = new FormData(event.currentTarget);
+  const prompt = String(data.get("prompt") || "").trim();
+  const changePrompt = data.getAll("change_prompt").includes("true");
+  const improvePrompt = data.getAll("improve_prompt").includes("true");
+  if (changePrompt && !prompt) {
+    state.modal = { type: "scenarioRegenerate", scenarioId, prompt, changePrompt, improvePrompt, error: "Informe o novo prompt." };
+    render();
+    return;
+  }
+  state.modal = { type: "scenarioRegenerate", scenarioId, prompt, changePrompt, improvePrompt, error: "" };
+  setBusy(true, "Regerando cenário no ComfyUI...");
+  try {
+    const queued = await api(`/api/stories/${state.activeStory.id}/scenarios/${scenarioId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, change_prompt: changePrompt, improve_prompt: improvePrompt }),
+    });
+    await waitForAsset(queued.asset_id, "Regerando cenário no ComfyUI...");
+    state.activeStory = await api(`/api/stories/${state.activeStory.id}/scenarios/${scenarioId}/replace`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: queued.asset_id }),
+    });
+    state.selectedScenarioId = scenarioId;
+    state.modal = { type: "scenarios" };
+    render();
+  } catch (error) {
+    state.modal = { type: "scenarioRegenerate", scenarioId, prompt, changePrompt, improvePrompt, error: error.message };
+    render();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function setActiveAppearance(characterId, appearanceId) {
@@ -5414,12 +6402,20 @@ async function generateCharacterAppearance(event) {
   const referenceAssetId = form.dataset.referenceAssetId || "";
   const data = new FormData(form);
   const promptText = String(data.get("prompt") || "").trim();
+  const doubleReference = form.dataset.mode === "double";
+  const additionalReferenceId = doubleReference ? state.appearanceReferenceId : "";
+  state.appearancePrompt = promptText;
+  state.appearanceImprovePrompt = data.getAll("improve_prompt").includes("true");
   if (!promptText) {
     alert("Descreva o que deseja mudar na aparência.");
     return;
   }
   if (!referenceAssetId) {
     alert("Selecione uma aparência de referência antes de gerar.");
+    return;
+  }
+  if (doubleReference && !additionalReferenceId) {
+    alert("Selecione a segunda referência antes de gerar.");
     return;
   }
   const scene = latestScene(state.activeStory);
@@ -5430,6 +6426,7 @@ async function generateCharacterAppearance(event) {
       body: JSON.stringify({
         prompt: promptText,
         reference_asset_id: referenceAssetId,
+        additional_reference_id: additionalReferenceId,
         improve_prompt: data.getAll("improve_prompt").includes("true"),
         scene_id: scene?.id || null,
       }),
@@ -5438,6 +6435,7 @@ async function generateCharacterAppearance(event) {
     await loadStory(state.activeStory.id);
     state.activeCharacterId = characterId;
     state.drawer = "appearanceDesigner";
+    state.appearancePrompt = "";
     render();
   } catch (error) {
     alert(error.message);
@@ -5458,6 +6456,8 @@ function openAppearanceRegenerateModal(characterId, appearanceId) {
     value: "",
     error: "",
     improvePrompt: true,
+    mode: "single",
+    additionalReferenceId: "",
   };
   render();
 }
@@ -5476,6 +6476,8 @@ async function regenerateExistingAppearance(event) {
   const data = new FormData(form);
   const promptText = String(data.get("prompt") || "").trim();
   const improvePrompt = data.getAll("improve_prompt").includes("true");
+  const doubleReference = state.modal.mode === "double";
+  const additionalReferenceId = doubleReference ? (state.modal.additionalReferenceId || "") : "";
   if (!promptText) {
     state.modal = { ...state.modal, value: promptText, improvePrompt, error: "Descreva o que deseja mudar na aparência." };
     render();
@@ -5492,6 +6494,11 @@ async function regenerateExistingAppearance(event) {
     render();
     return;
   }
+  if (doubleReference && !additionalReferenceId) {
+    state.modal = { ...state.modal, value: promptText, improvePrompt, error: "Selecione a segunda referência." };
+    render();
+    return;
+  }
   const ok = confirm("Esta ação substituirá a aparência selecionada. A imagem anterior será perdida. Deseja continuar?");
   if (!ok) return;
   const scene = latestScene(state.activeStory);
@@ -5502,6 +6509,7 @@ async function regenerateExistingAppearance(event) {
       body: JSON.stringify({
         prompt: promptText,
         reference_appearance_id: referenceAppearanceId,
+        additional_reference_id: additionalReferenceId,
         improve_prompt: improvePrompt,
         scene_id: scene?.id || null,
       }),
@@ -5918,6 +6926,8 @@ async function waitForAsset(assetId, label) {
 
 async function waitForAppearanceUpdateAssets(story) {
   const results = story?.appearance_update_results?.results || [];
+  const errors = results.filter(item => item?.mode === "error" && item.error).map(item => item.error);
+  if (errors.length) throw new Error(`Falha ao atualizar aparência: ${errors.join(" | ")}`);
   const queuedAssets = results.filter(item => item?.mode === "create_new" && item.asset_id);
   if (!queuedAssets.length) return [];
   const resolved = [];

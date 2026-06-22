@@ -122,9 +122,11 @@ def queue_workbench_image(
     preserve_generation_settings=True,
     generation_overrides=None,
     input_image_path=None,
+    reference_image_path=None,
     expression_prompts=None,
 ):
     input_image = upload_image(base_url, input_image_path) if input_image_path else None
+    reference_image = upload_image(base_url, reference_image_path) if reference_image_path else None
     workflow = load_api_workflow(workflows_dir, workbench_id)
     workflow = apply_workbench_inputs(
         workflow,
@@ -141,6 +143,7 @@ def queue_workbench_image(
         preserve_generation_settings,
         generation_overrides,
         input_image,
+        reference_image,
         expression_prompts,
     )
     request = urllib.request.Request(
@@ -333,6 +336,7 @@ def apply_workbench_inputs(
     preserve_generation_settings=True,
     generation_overrides=None,
     input_image=None,
+    reference_image=None,
     expression_prompts=None,
 ):
     workflow = deepcopy(workflow)
@@ -341,8 +345,10 @@ def apply_workbench_inputs(
     assigned_positive = False
     assigned_negative = False
     assigned_image = False
+    assigned_reference_image = False
     overrides = generation_overrides if isinstance(generation_overrides, dict) else None
     input_image_name = comfy_uploaded_image_name(input_image)
+    reference_image_name = comfy_uploaded_image_name(reference_image)
     expression_prompts = expression_prompts if isinstance(expression_prompts, dict) else {}
 
     for node in workflow.values():
@@ -387,9 +393,17 @@ def apply_workbench_inputs(
             and not filename_prefix_has_expression(inputs.get("filename_prefix"))
         ):
             inputs["filename_prefix"] = "TaleWeaver"
-        if input_image_name and not assigned_image and "image" in inputs and is_plain_value(inputs.get("image")):
-            inputs["image"] = input_image_name
-            assigned_image = True
+        if "image" in inputs and is_plain_value(inputs.get("image")):
+            if reference_image_name:
+                if not assigned_reference_image and workflow_image_role(meta_title) == "reference":
+                    inputs["image"] = reference_image_name
+                    assigned_reference_image = True
+                elif not assigned_image and workflow_image_role(meta_title) == "main":
+                    inputs["image"] = input_image_name
+                    assigned_image = True
+            elif input_image_name and not assigned_image:
+                inputs["image"] = input_image_name
+                assigned_image = True
 
         text_key = editable_text_key(inputs)
         if not text_key:
@@ -409,7 +423,18 @@ def apply_workbench_inputs(
             inputs[text_key] = positive
             assigned_positive = True
 
+    if reference_image_name and (not assigned_image or not assigned_reference_image):
+        raise ValueError("O workflow com duas referencias precisa ter nós de imagem nomeados Main e Reference.")
     return workflow
+
+
+def workflow_image_role(title):
+    tokens = {token for token in re.split(r"[^a-z0-9]+", str(title or "").lower()) if token}
+    if "reference" in tokens:
+        return "reference"
+    if "main" in tokens:
+        return "main"
+    return ""
 
 
 def expression_key_for_prompt_node(title, text):

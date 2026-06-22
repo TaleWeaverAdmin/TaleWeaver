@@ -115,7 +115,12 @@ Visual rules:
 
 Expression Logic:
 
-- use 'neutral' as the default expression for standard dialogue, mundane actions, or general information sharing. Only use other emotional expressions (happy, sad, angry, thoughtful, surprised, embarrassed, scared) when the character experiences a distinct, noticeable emotional shift, a strong reaction to the player's action, or a significant internal conflict. Avoid 'emotional flair' for every line; the expression must clearly match the character's immediate internal state.
+- neutral is the dominant default. Use it for ordinary speech, explanations, questions, observations, calm reflection, politeness, mild concern, restrained emotion, and weak emotional subtext.
+- A non-neutral expression is a brief accent reserved for an unmistakable strong emotional peak or abrupt reaction that is directly evident in that specific line. Do not use an expressive sprite merely because the topic is serious, pleasant, sad, unusual, or reflective.
+- Do not carry an expression forward from CHARACTER VISUAL STATE, a previous dialogue, or a previous scene. Re-evaluate every line independently and return to neutral afterward.
+- Do not use thoughtful just because someone explains, asks, remembers, studies, or considers something. Do not use happy for gentle approval or courtesy, sad for a somber topic, or surprised for an unusual but expected event.
+- Across a normal scene, at least 75 percent of non-Narrador dialogue entries must be neutral. With 4 to 7 character dialogue entries, use at most one non-neutral entry; with 8 or more, use at most two. It is valid and often preferable for every entry to be neutral.
+- characters_on_screen.expression must be neutral. Temporary expression changes belong only to the current speaking dialogue entry so other visible characters and the between-line state use neutral sprites.
 
 Appearance update rules:
 - appearance_updates is mandatory.
@@ -181,6 +186,11 @@ Rules:
 - Do not repeat the previous scene, title, revelation, choices, or emotional beat.
 - Dialogues should feel like a VN: distinct voices, subtext, concrete details, and 4 to 8 entries when characters are present.
 - Every expression value must be exactly one of: neutral, happy, sad, angry, thoughtful, surprised, embarrassed, scared.
+- neutral is the dominant default for dialogue. Use it for explanations, questions, observations, calm reflection, politeness, mild concern, restrained emotion, and weak emotional subtext.
+- Use a non-neutral dialogue expression only for an unmistakable strong emotional peak or abrupt reaction directly evident in that line. Do not infer one merely from a serious, pleasant, sad, unusual, or reflective topic.
+- Never carry an expression from a previous line, CHARACTER VISUAL STATE, or a previous scene. Return to neutral after any brief expressive line.
+- At least 75 percent of non-Narrador dialogue entries must be neutral. With 4 to 7 character dialogue entries, use at most one non-neutral entry; with 8 or more, use at most two. An entirely neutral scene is valid and often preferable.
+- Every characters_on_screen.expression must be neutral. Use dialogue.expression only for a temporary change while that character speaks.
 - Keep or change location deliberately. If the place stays the same, set location_changed false and preserve a compatible background.
 - background_prompt is only environment: no main characters, foreground people, portraits, large faces, or character names.
 - characters_on_screen is the complete visual cast. Use SCENE CAST STATE as authoritative and CHARACTER VISUAL STATE for active sprite appearances. Include continuity for every previous visible character.
@@ -199,7 +209,7 @@ Rules:
 CONTEXT_STATS_KEY = "__context_stats"
 
 
-def build_narrative_context(story, user_input, speaker_focus=None):
+def build_narrative_context(story, user_input, speaker_focus=None, appearance_reference=None):
     characters = story.get("characters") or []
     scenes = story.get("scenes") or []
     memory = story.get("memory_entries") or []
@@ -220,6 +230,8 @@ def build_narrative_context(story, user_input, speaker_focus=None):
         "character_visual_state": character_visual_state,
         "recent_scene_states": build_recent_scene_states(scenes[-5:]),
         "visual_state": build_visual_state(current_location, current_background),
+        "saved_scenarios": build_saved_scenarios(story),
+        "appearance_reference_request": build_appearance_reference_request(appearance_reference),
         "scene_cast_state": build_scene_cast_state(current_scene, memory),
         "speaker_focus": build_speaker_focus_context(story, current_scene, speaker_focus),
         "player_choice": user_input or "Start or continue the story naturally.",
@@ -255,6 +267,12 @@ RECENT SCENE STATES:
 
 VISUAL STATE:
 {context["visual_state"]}
+
+SAVED SCENARIOS:
+{context["saved_scenarios"]}
+
+VISUAL REFERENCE REQUEST:
+{context["appearance_reference_request"]}
 
 SCENE CAST STATE:
 {context["scene_cast_state"]}
@@ -776,6 +794,32 @@ def build_visual_state(current_location, current_background):
     )
 
 
+def build_saved_scenarios(story):
+    scenarios = (story or {}).get("scenarios") or []
+    if not scenarios:
+        return "No saved scenarios."
+    lines = []
+    for scenario in scenarios:
+        name = compact(scenario.get("name") or "Unnamed scenario", 80)
+        description = compact(scenario.get("description") or "", 140)
+        active = " | ACTIVE" if scenario.get("is_active") else ""
+        lines.append(f"- {name}{active}: {description or 'no short description'}")
+    return "\n".join(lines)
+
+
+def build_appearance_reference_request(reference):
+    if not isinstance(reference, dict) or not reference.get("name"):
+        return "No visual reference selected by the player."
+    name = compact(reference.get("name"), 80)
+    return (
+        f'The player selected the saved visual reference "{name}" for the persistent appearance change in PLAYER_CHOICE. '
+        f'For the create_new appearance_update that corresponds to that change, include "reference_name": "{name}" exactly. '
+        "This request requires create_new; do not replace it with switch_existing or revert_existing. "
+        "Do not mention the reference marker or its name in scene_text or dialogues. "
+        "If more than one character receives a new appearance, attach reference_name only to the character whose change is described by PLAYER_CHOICE."
+    )
+
+
 def build_scene_cast_state(current_scene, memory):
     current_scene = current_scene or {}
     on_screen = []
@@ -919,6 +963,7 @@ def build_output_requirements():
             "Do not use appearance_updates for expressions, emotions, poses, gestures, lighting, speaking, walking, holding temporary objects, or temporary dirt/wetness.",
             "If the scene or memory says the character is visually different from the active appearance, appearance_updates must describe that change.",
             "create_new requires: character, action, based_on_appearance_id, new_appearance_name, new_appearance_summary, change_prompt, reason, activate_after_generation.",
+            "When VISUAL REFERENCE REQUEST names a saved reference, the corresponding create_new update also requires reference_name with that exact logical name.",
             "For create_new, new_appearance_summary describes the resulting appearance and reason explains the narrative decision; do not put those explanations in change_prompt.",
             "change_prompt is sent to ComfyUI. Write it in English as a short comma-separated list of direct, concrete visual changes only.",
             "change_prompt must not contain the character name or pronouns. Do not write a sentence about what happened to the character.",

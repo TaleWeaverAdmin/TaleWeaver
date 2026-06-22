@@ -12,6 +12,10 @@ from .prompts import COMPACT_NARRATOR_SYSTEM_PROMPT, CONTEXT_STATS_KEY, NARRATOR
 
 OFFICIAL_EXPRESSIONS = {"neutral", "happy", "sad", "angry", "thoughtful", "surprised", "embarrassed", "scared"}
 CHARACTER_EXPRESSION_KEYS = ["happy", "sad", "angry", "thoughtful", "surprised", "embarrassed", "scared"]
+EXPRESSION_PRESERVATION_CLAUSE = (
+    "keep the same character, same face, same hairstyle, same outfit, same body, "
+    "same proportions, same visual style, same framing"
+)
 
 ESTIMATED_CHARS_PER_TOKEN = 3.2
 
@@ -716,6 +720,7 @@ def prompt_profile_from_visual_style(style, settings=None, asset_type="sprite"):
         "sprite": ("sprite_prompt_command", "sprite_prompt_example"),
         "background": ("background_prompt_command", "background_prompt_example"),
         "appearance": ("appearance_prompt_command", "appearance_prompt_example"),
+        "appearance_reference": ("appearance_reference_prompt_command", "appearance_reference_prompt_example"),
     }[normalized_type]
     profile = {
         "style": clean(style.get(fields[0])),
@@ -749,6 +754,8 @@ def normalize_prompt_asset_type(asset_type):
         "cenários": "background",
         "background": "background",
         "backgrounds": "background",
+        "appearance_reference": "appearance_reference",
+        "appearance-reference": "appearance_reference",
         "appearance": "appearance",
         "appearances": "appearance",
         "aparencia": "appearance",
@@ -843,8 +850,8 @@ def generate_character_expression_prompts(story_id, character_ids=None, only_mis
         "Describe only the new facial expression and a simple pose, body-language cue, or hand gesture. Change only expression and pose. "
         "Never describe or redesign the character's face, hair, body, skin, species, gender, clothing, accessories, tattoos, colors, lighting, background, camera, framing, or art style. "
         "Never include image-generation quality tags, model tags, years, scores, artist/style tags, or the character's base visual description. "
-        "Use at most 45 words before the preservation clause. "
-        "Every prompt must end with this exact preservation clause: keep the same character, same face, same hairstyle, same outfit, same body, same proportions, same visual style, same framing. "
+        "Use at most 45 words. "
+        "Do not include preservation instructions; the application appends its fixed preservation clause after generation. "
         "Do not add neutral and do not reuse identical prompts across characters."
     )
     user = (
@@ -913,11 +920,21 @@ def generate_character_expression_prompts(story_id, character_ids=None, only_mis
 
 def normalize_generated_expression_prompts(value):
     source = value if isinstance(value, dict) else {}
-    return {key: clean(source.get(key)) for key in CHARACTER_EXPRESSION_KEYS}
+    return {key: normalize_generated_expression_prompt(source.get(key)) for key in CHARACTER_EXPRESSION_KEYS}
+
+
+def normalize_generated_expression_prompt(value):
+    text = clean(value)
+    if not text:
+        return ""
+    preservation_start = re.search(r"\bkeep\s+the\s+same\s+character\b", text, flags=re.IGNORECASE)
+    expression_edit = (text[:preservation_start.start()] if preservation_start else text).rstrip(" ,.;:")
+    return f"{expression_edit}, {EXPRESSION_PRESERVATION_CLAUSE}."
 
 
 def expression_prompts_complete(value):
-    prompts = normalize_generated_expression_prompts(value)
+    source = value if isinstance(value, dict) else {}
+    prompts = {key: clean(source.get(key)) for key in CHARACTER_EXPRESSION_KEYS}
     return all(expression_prompt_is_edit_only(prompts.get(key)) for key in CHARACTER_EXPRESSION_KEYS)
 
 
@@ -971,11 +988,7 @@ def expression_prompt_is_edit_only(prompt):
     ]
     if any(marker in lowered for marker in forbidden):
         return False
-    preservation_clause = (
-        "keep the same character, same face, same hairstyle, same outfit, same body, "
-        "same proportions, same visual style, same framing"
-    )
-    if preservation_clause not in lowered:
+    if EXPRESSION_PRESERVATION_CLAUSE not in lowered:
         return False
     content = lowered.split("keep the same character", 1)[0]
     return len(re.findall(r"\b[\w'-]+\b", content)) <= 45
@@ -999,6 +1012,8 @@ def visual_style_workbench(style, settings=None, asset_type="sprite"):
         return style.get("background_workbench") or settings.get("comfy_background_workbench") or ""
     if normalized == "appearance":
         return style.get("appearance_workbench") or style.get("sprite_workbench") or settings.get("comfy_sprite_workbench") or ""
+    if normalized == "appearance_reference":
+        return style.get("appearance_reference_workbench") or ""
     return style.get("sprite_workbench") or settings.get("comfy_sprite_workbench") or ""
 
 
@@ -2425,13 +2440,13 @@ def dedupe_tags(parts):
     return ", ".join(output)
 
 
-def generate_scene(story_id, user_input, speaker_focus=None, story_override=None, save=True):
+def generate_scene(story_id, user_input, speaker_focus=None, story_override=None, save=True, appearance_reference=None):
     story = story_override or db.get_story(story_id)
     if not story:
         raise ValueError("Historia nao encontrada.")
 
     settings = ai_client.settings_for_ai_role(db.get_settings(), "scene")
-    full_narrative_context = build_narrative_context(story, user_input, speaker_focus)
+    full_narrative_context = build_narrative_context(story, user_input, speaker_focus, appearance_reference)
     prompt_mode = active_narrator_prompt_mode(settings)
     system_prompt = active_narrator_system_prompt(settings, prompt_mode)
     log_request_base = {
@@ -2441,6 +2456,7 @@ def generate_scene(story_id, user_input, speaker_focus=None, story_override=None
         "llama_context_window": active_text_context_window(settings),
         "user_input": user_input,
         "speaker_focus": speaker_focus,
+        "appearance_reference": (appearance_reference or {}).get("name") if isinstance(appearance_reference, dict) else "",
     }
 
     result = None
@@ -3152,6 +3168,8 @@ def stabilize_scene_cast(story, scene, user_input, raw_response=None):
                 }
             )
 
+    for item in current:
+        item["expression"] = "neutral"
     scene["characters_on_screen"] = current[:6]
     scene["character_continuity"] = continuity
     return scene
@@ -3540,6 +3558,7 @@ def normalize_appearance_updates(value, aliases=None):
                     "new_appearance_name": clean(first_present(item, "new_appearance_name", "appearance_name", "label")),
                     "new_appearance_summary": clean(first_present(item, "new_appearance_summary", "summary", "description")),
                     "change_prompt": clean(first_present(item, "change_prompt", "prompt", "visual_prompt")),
+                    "reference_name": clean(first_present(item, "reference_name", "reference", "visual_reference")),
                 }
             )
         else:

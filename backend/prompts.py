@@ -103,6 +103,7 @@ Visual rules:
 - Every dialogue and characters_on_screen expression must be exactly one of: neutral, happy, sad, angry, thoughtful, surprised, embarrassed, scared.
 - Use the canonical Name from ACTIVE CHARACTER BRIEF when a character is mentioned by first name, surname, title, or alias.
 - characters_on_screen can contain up to 6 visually relevant characters.
+- Any existing registered visual character who speaks in dialogues must also be present in characters_on_screen. If they should not be physically present, do not give them dialogue.
 - In first_person mode, never include the user-protagonist in characters_on_screen, even if they speak, think, act, or are physically present.
 - Before writing characters_on_screen, check every character listed in SCENE CAST STATE and decide whether they are physically present in the next scene.
 - character_continuity must include one item for every previous visible character from SCENE CAST STATE.
@@ -129,6 +130,7 @@ Appearance update rules:
 - change_prompt must be a short English list of concrete visual changes, written as direct comma-separated commands or tags rather than narrative prose.
 - change_prompt must contain only the visual delta. Do not include the character name, pronouns, identity traits that stay unchanged, story context, causes, emotions, personality, mood, symbolism, justification, or preservation instructions.
 - Do not embellish change_prompt with inferred effects that were not explicitly established as persistent visual changes.
+- When VISUAL REFERENCE REQUEST names an image, change_prompt must be exactly "Replace the character's outfit with the outfit shown in image 2." Do not describe or infer the referenced outfit.
 - Good change_prompt: "remove all clothes, shirtless, pantless, barefoot, wearing only underwear".
 - Bad change_prompt: "Thorn is stripped of his armor by the divine presence, looking vulnerable yet resolute.".
 
@@ -221,12 +223,20 @@ def build_narrative_context(story, user_input, speaker_focus=None, appearance_re
     selected_characters = select_relevant_characters(characters, current_scene, user_input, story.get("player_character") or {})
 
     character_visual_state, visual_stats = build_character_visual_state(story, selected_characters, current_scene)
+    active_character_brief, active_character_stats = build_active_character_brief_with_stats(
+        story,
+        selected_characters,
+        current_scene,
+        speaker_focus,
+        user_input,
+    )
+    context_stats = {**visual_stats, **active_character_stats}
     return {
         "participation_mode": build_participation_mode_context(story),
         "story_core": build_story_core(story, lore_entries),
         "current_story_memory": build_current_story_memory(story, memory),
         "story_progress": build_story_progress(story, scenes),
-        "active_character_brief": build_active_character_brief(story, selected_characters, current_scene, speaker_focus),
+        "active_character_brief": active_character_brief,
         "character_visual_state": character_visual_state,
         "recent_scene_states": build_recent_scene_states(scenes[-5:]),
         "visual_state": build_visual_state(current_location, current_background),
@@ -238,7 +248,7 @@ def build_narrative_context(story, user_input, speaker_focus=None, appearance_re
         "directives": build_directives(user_input),
         "task": build_narrative_task(story, len(scenes)),
         "output_requirements": build_output_requirements(),
-        CONTEXT_STATS_KEY: visual_stats,
+        CONTEXT_STATS_KEY: context_stats,
     }
 
 
@@ -493,50 +503,277 @@ def build_active_characters(story, selected_characters):
     return build_active_character_brief(story, selected_characters, {}, None)
 
 
-def build_active_character_brief(story, selected_characters, current_scene=None, speaker_focus=None):
-    character_lines = []
+def build_active_character_brief(story, selected_characters, current_scene=None, speaker_focus=None, user_input=""):
+    brief, _stats = build_active_character_brief_with_stats(
+        story,
+        selected_characters,
+        current_scene,
+        speaker_focus,
+        user_input,
+    )
+    return brief
+
+
+def build_active_character_brief_with_stats(story, selected_characters, current_scene=None, speaker_focus=None, user_input=""):
+    current_scene = current_scene or {}
+    selected_characters = selected_characters or []
+    all_characters = []
     seen = set()
-    focus_key = normalize_prompt_name((speaker_focus or {}).get("name") if isinstance(speaker_focus, dict) else speaker_focus)
-    visible_keys = {
-        normalize_prompt_name(item.get("name"))
-        for item in (current_scene or {}).get("characters_on_screen") or []
-        if isinstance(item, dict)
-    }
-    for index, character in enumerate(selected_characters):
-        key = str(character.get("name") or "").lower()
-        if key in seen:
+    for character in list(selected_characters) + list((story or {}).get("characters") or []):
+        key = normalize_prompt_name((character or {}).get("name"))
+        if not key or key in seen:
             continue
         seen.add(key)
-        name_key = normalize_prompt_name(character.get("name"))
-        high_detail = index < 6 or name_key == focus_key or name_key in visible_keys
-        if high_detail:
-            character_lines.append(
-                "\n".join(
-                    [
-                        f"Name: {character.get('name', '')}",
-                        f"Aliases: {build_character_alias_line(character)}",
-                        f"Role: {compact(character.get('role'), 70)}",
-                        f"Voice: {compact(character.get('speech_style'), 90)}",
-                        f"Personality: {compact(character.get('personality'), 120)}",
-                        f"Relationship: {compact(character.get('relationship'), 110)}",
-                        f"Secrets/conflicts: {compact(character.get('secrets'), 110)}",
-                        f"Status: {character.get('status', '')}",
-                    ]
-                )
-            )
+        all_characters.append(character)
+
+    focus_key = normalize_prompt_name((speaker_focus or {}).get("name") if isinstance(speaker_focus, dict) else speaker_focus)
+    visible_names = [
+        str(item.get("name") or "").strip()
+        for item in (current_scene or {}).get("characters_on_screen") or []
+        if isinstance(item, dict) and item.get("name")
+    ]
+    visible_keys = [normalize_prompt_name(name) for name in visible_names]
+    visible_keys = [key for key in visible_keys if key]
+    dialogue_keys = []
+    dialogue_names = []
+    for dialogue in current_scene.get("dialogues") or []:
+        if not isinstance(dialogue, dict):
             continue
-        character_lines.append(
-            "\n".join(
-                [
-                    f"Name: {character.get('name', '')}",
-                    f"Aliases: {build_character_alias_line(character)}",
-                    f"Role/voice: {compact(character.get('role'), 55)}; {compact(character.get('speech_style'), 70)}",
-                    f"Personality/conflict: {compact(character.get('personality'), 80)}; {compact(character.get('secrets'), 80)}",
-                    f"Status: {character.get('status', '')}",
-                ]
+        dialogue_name = str(dialogue.get("character") or "").strip()
+        name_key = normalize_prompt_name(dialogue_name)
+        if name_key and name_key != normalize_prompt_name("Narrador") and name_key not in dialogue_keys:
+            dialogue_keys.append(name_key)
+            dialogue_names.append(dialogue_name)
+
+    known_alias_keys = {
+        normalize_prompt_name(alias)
+        for character in all_characters
+        for alias in character_alias_candidates(character)
+        if normalize_prompt_name(alias)
+    }
+    for name in visible_names + dialogue_names:
+        key = normalize_prompt_name(name)
+        if key and key not in seen and key not in known_alias_keys:
+            seen.add(key)
+            all_characters.append(
+                {
+                    "name": name,
+                    "role": "personagem presente na cena",
+                    "personality": "usar o estado da cena e as falas recentes",
+                    "speech_style": "consistente com a cena atual",
+                }
             )
-        )
-    return "\n\n".join(character_lines) or "No known characters."
+
+    user_text = normalize_prompt_name(user_input)
+    player_key = normalize_prompt_name(((story or {}).get("player_character") or {}).get("name"))
+
+    scored = []
+    for index, character in enumerate(all_characters):
+        name_key = normalize_prompt_name(character.get("name"))
+        if not name_key:
+            continue
+        aliases = [normalize_prompt_name(alias) for alias in character_alias_candidates(character)]
+        aliases = [alias for alias in aliases if alias]
+        mentioned = any(alias and alias in user_text for alias in aliases) if user_text else False
+        score = 0
+        visible_matches = [visible_keys.index(alias) for alias in aliases if alias in visible_keys]
+        dialogue_matches = [dialogue_keys.index(alias) for alias in aliases if alias in dialogue_keys]
+        if visible_matches:
+            score = max(score, 1000 - min(visible_matches))
+        if dialogue_matches:
+            score = max(score, 900 - min(dialogue_matches))
+        if focus_key and focus_key in aliases:
+            score = max(score, 850)
+        if mentioned:
+            score = max(score, 800)
+        if player_key and name_key == player_key:
+            score = max(score, 700)
+        if not visible_keys and not dialogue_keys and not user_text and index < 6:
+            score = max(score, 500 - index)
+        if score:
+            scored.append((score, index, character))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    included = [item[2] for item in scored]
+    included_keys = {normalize_prompt_name(character.get("name")) for character in included}
+    omitted = [
+        character.get("name") or ""
+        for character in all_characters
+        if normalize_prompt_name(character.get("name")) not in included_keys
+    ]
+    was_compressed = False
+
+    if not included:
+        stats = {
+            "active_character_brief_character_count": 0,
+            "active_character_brief_included_characters": [],
+            "active_character_brief_omitted_characters": [],
+            "active_character_brief_used_saved_ai_summary": 0,
+            "active_character_brief_generated_missing_summary": 0,
+            "active_character_brief_was_compressed": False,
+        }
+        return "No known active characters.", stats
+
+    lines = [render_active_character_brief_line(character, "normal") for character in included]
+    text = "\n".join(lines)
+    target_limit = 1800
+    used_saved_ai_summary = sum(1 for character in included if clean_ai_summary_text(character.get("ai_prompt_brief")))
+    generated_missing_summary = len(included) - used_saved_ai_summary
+    if len(text) > target_limit:
+        was_compressed = True
+        lines = [render_active_character_brief_line(character, "short") for character in included]
+        text = "\n".join(lines)
+    if len(text) > target_limit:
+        lines = [render_active_character_brief_line(character, "tiny") for character in included]
+        text = "\n".join(lines)
+    if len(text) > target_limit:
+        line_limit = max(48, int((target_limit - max(0, len(lines) - 1)) / max(1, len(lines))))
+        lines = [hard_compact_line(line, line_limit) for line in lines]
+        text = "\n".join(lines)
+
+    stats = {
+        "active_character_brief_character_count": len(included),
+        "active_character_brief_included_characters": [character.get("name") or "" for character in included],
+        "active_character_brief_omitted_characters": [name for name in omitted if name],
+        "active_character_brief_used_saved_ai_summary": used_saved_ai_summary,
+        "active_character_brief_generated_missing_summary": generated_missing_summary,
+        "active_character_brief_was_compressed": was_compressed,
+    }
+    return text or "No known active characters.", stats
+
+
+def character_alias_candidates(character):
+    character = character or {}
+    name = str(character.get("name") or "").strip()
+    aliases = str(character.get("aliases") or "").strip()
+    parts = []
+    if name:
+        name_parts = name.split()
+        parts.extend([name, name_parts[0], name_parts[-1]])
+    if aliases:
+        parts.extend([item.strip() for item in re.split(r"[,;/|]", aliases) if item.strip()])
+    seen = set()
+    unique = []
+    for part in parts:
+        key = normalize_prompt_name(part)
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(part)
+    return unique
+
+
+def render_active_character_brief_line(character, detail="normal"):
+    saved = normalize_saved_ai_prompt_brief(character)
+    if saved:
+        return saved
+    if detail == "tiny":
+        role_limit, personality_limit, speech_limit, line_limit = 30, 38, 30, 170
+    elif detail == "short":
+        role_limit, personality_limit, speech_limit, line_limit = 46, 60, 46, 235
+    else:
+        role_limit, personality_limit, speech_limit, line_limit = 64, 82, 64, 320
+    name = compact_name_without_ellipsis(character.get("name") or "Unnamed character", 46)
+    role = compact_without_ellipsis(character.get("ai_role_summary") or character.get("role") or character.get("character_type") or character.get("description") or "personagem ativo na cena", role_limit)
+    personality = compact_without_ellipsis(character.get("ai_personality_summary") or character.get("personality") or character.get("description") or "sem personalidade registrada", personality_limit)
+    speech = compact_without_ellipsis(character.get("ai_voice_summary") or character.get("speech_style") or "sem padrao de fala registrado", speech_limit)
+    line = f"{name} | Role: {role} Personality: {personality} Voice: {speech}"
+    return hard_compact_line(line, line_limit)
+
+
+def normalize_saved_ai_prompt_brief(character):
+    character = character or {}
+    brief = clean_ai_summary_text(character.get("ai_prompt_brief"))
+    if not brief:
+        return ""
+    name = clean_ai_summary_text(character.get("name") or "")
+    if " | Role: " in brief and " Personality: " in brief and " Voice: " in brief:
+        return brief
+    role = clean_ai_summary_text(character.get("ai_role_summary") or character.get("role") or "")
+    personality = clean_ai_summary_text(character.get("ai_personality_summary") or character.get("personality") or "")
+    voice = clean_ai_summary_text(character.get("ai_voice_summary") or character.get("speech_style") or "")
+    if name and role and personality and voice:
+        return f"{name} | Role: {ensure_period(role)} Personality: {ensure_period(personality)} Voice: {ensure_period(voice)}"
+    return brief
+
+
+def clean_ai_summary_text(value):
+    text = str(value or "").replace("\r", " ").strip()
+    text = " ".join(text.split())
+    return text.replace("...", "").strip()
+
+
+def compact_name_without_ellipsis(value, limit):
+    text = clean_ai_summary_text(value)
+    if len(text) <= limit:
+        return text
+    words = text.split()
+    chosen = []
+    current = 0
+    for word in words:
+        extra = len(word) + (1 if chosen else 0)
+        if chosen and current + extra > limit:
+            break
+        if not chosen and extra > limit:
+            chosen.append(word[:limit].rstrip(" ,.;:"))
+            break
+        chosen.append(word)
+        current += extra
+    return " ".join(chosen).strip()
+
+
+def ensure_period(value):
+    text = clean_ai_summary_text(value).rstrip(" ,;:")
+    if not text:
+        return ""
+    return text if text[-1] in ".!?" else f"{text}."
+
+
+def compact_without_ellipsis(value, limit):
+    text = clean_ai_summary_text(value)
+    if len(text) <= limit:
+        return ensure_period(text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    selected = []
+    current = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        extra = len(sentence) + (1 if selected else 0)
+        if selected and current + extra > limit:
+            break
+        if not selected and len(sentence) > limit:
+            break
+        selected.append(sentence)
+        current += extra
+    if selected:
+        return ensure_period(" ".join(selected))
+    words = text.split()
+    chosen = []
+    current = 0
+    for word in words:
+        extra = len(word) + (1 if chosen else 0)
+        if chosen and current + extra > limit:
+            break
+        if not chosen and extra > limit:
+            chosen.append(word[:limit].rstrip(" ,.;:"))
+            break
+        chosen.append(word)
+        current += extra
+    return ensure_period(" ".join(chosen))
+
+
+def hard_compact_line(value, limit):
+    text = str(value or "").replace("\r", " ").strip()
+    text = " ".join(text.split())
+    limit = int(limit or 0)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[:limit].rstrip(" ,.;:")
 
 
 def build_character_visual_state(story, selected_characters, current_scene):
@@ -814,6 +1051,7 @@ def build_appearance_reference_request(reference):
     return (
         f'The player selected the saved visual reference "{name}" for the persistent appearance change in PLAYER_CHOICE. '
         f'For the create_new appearance_update that corresponds to that change, include "reference_name": "{name}" exactly. '
+        'Set change_prompt exactly to "Replace the character\'s outfit with the outfit shown in image 2." Do not describe, infer, or summarize the referenced outfit. '
         "This request requires create_new; do not replace it with switch_existing or revert_existing. "
         "Do not mention the reference marker or its name in scene_text or dialogues. "
         "If more than one character receives a new appearance, attach reference_name only to the character whose change is described by PLAYER_CHOICE."
@@ -961,9 +1199,11 @@ def build_output_requirements():
             "Use switch_existing/revert_existing only if an existing appearance already visually matches the new state.",
             "Never switch to the same active appearance unless that active appearance already describes the new state.",
             "Do not use appearance_updates for expressions, emotions, poses, gestures, lighting, speaking, walking, holding temporary objects, or temporary dirt/wetness.",
+            "Any registered visual character who speaks in dialogues must also appear in characters_on_screen. If a character is absent or off-screen, they must not speak as a normal dialogue entry.",
             "If the scene or memory says the character is visually different from the active appearance, appearance_updates must describe that change.",
             "create_new requires: character, action, based_on_appearance_id, new_appearance_name, new_appearance_summary, change_prompt, reason, activate_after_generation.",
             "When VISUAL REFERENCE REQUEST names a saved reference, the corresponding create_new update also requires reference_name with that exact logical name.",
+            'For that referenced update, change_prompt must be exactly "Replace the character\'s outfit with the outfit shown in image 2." Never describe the clothing from the story text.',
             "For create_new, new_appearance_summary describes the resulting appearance and reason explains the narrative decision; do not put those explanations in change_prompt.",
             "change_prompt is sent to ComfyUI. Write it in English as a short comma-separated list of direct, concrete visual changes only.",
             "change_prompt must not contain the character name or pronouns. Do not write a sentence about what happened to the character.",
@@ -988,26 +1228,26 @@ def build_narrative_task(story=None, scene_count=0):
 
 def select_relevant_characters(characters, current_scene, user_input, player):
     wanted = set()
-    text = (user_input or "").lower()
-    player_name = (player.get("name") or "").lower()
+    text = normalize_prompt_name(user_input)
+    player_name = normalize_prompt_name(player.get("name"))
     if player_name:
         wanted.add(player_name)
     for item in current_scene.get("characters_on_screen") or []:
         if isinstance(item, dict) and item.get("name"):
-            wanted.add(str(item.get("name")).lower())
+            wanted.add(normalize_prompt_name(item.get("name")))
     for dialogue in current_scene.get("dialogues") or []:
         if isinstance(dialogue, dict) and dialogue.get("character"):
-            wanted.add(str(dialogue.get("character")).lower())
+            wanted.add(normalize_prompt_name(dialogue.get("character")))
     selected = []
     for character in characters:
-        name = str(character.get("name") or "")
-        key = name.lower()
-        if key and (key in wanted or key in text):
+        aliases = [normalize_prompt_name(alias) for alias in character_alias_candidates(character)]
+        aliases = [alias for alias in aliases if alias]
+        if any(alias in wanted or (text and alias in text) for alias in aliases):
             selected.append(character)
     if not selected:
         selected = characters[:]
     extras = [character for character in characters if character not in selected]
-    return (selected + extras)[:12]
+    return (selected + extras)[: max(12, len(selected))]
 
 
 def compact(value, limit):

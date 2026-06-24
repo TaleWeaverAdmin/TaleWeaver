@@ -24,7 +24,7 @@ COMPACT_CONTEXT_PREFERRED_LIMITS = {
     "story_core": 950,
     "current_story_memory": 1200,
     "story_progress": 700,
-    "active_character_brief": 950,
+    "active_character_brief": 1200,
     "character_visual_state": 1100,
     "recent_scene_states": 1250,
     "visual_state": 420,
@@ -41,7 +41,7 @@ COMPACT_CONTEXT_MAX_LIMITS = {
     "story_core": 1500,
     "current_story_memory": 1800,
     "story_progress": 950,
-    "active_character_brief": 1500,
+    "active_character_brief": 1800,
     "character_visual_state": 1600,
     "recent_scene_states": 2300,
     "visual_state": 520,
@@ -58,7 +58,7 @@ COMPACT_CONTEXT_MIN_LIMITS = {
     "story_core": 520,
     "current_story_memory": 450,
     "story_progress": 420,
-    "active_character_brief": 520,
+    "active_character_brief": 720,
     "character_visual_state": 520,
     "recent_scene_states": 520,
     "visual_state": 220,
@@ -160,6 +160,10 @@ Required JSON format:
 "clothing": "specific outfit/clothing",
 "background": "background history",
 "goals": "goals, fears, and internal conflict",
+"ai_role_summary": "short narrative role summary",
+"ai_personality_summary": "short practical personality summary",
+"ai_voice_summary": "short voice and speech style summary",
+"ai_prompt_brief": "Name | Role: ... Personality: ... Voice: ...",
 "visual_prompt": "english visual prompt for this character sprite only"
 },
 "characters": [
@@ -176,6 +180,10 @@ Required JSON format:
 "clothing": "specific outfit/clothing",
 "relationship": "relationship to the protagonist, including tension or conflict",
 "secret_or_conflict": "what this character hides, wants, fears, or may become",
+"ai_role_summary": "short narrative role summary",
+"ai_personality_summary": "short practical personality summary",
+"ai_voice_summary": "short voice and speech style summary",
+"ai_prompt_brief": "Name | Role: ... Personality: ... Voice: ...",
 "visual_prompt": "english visual prompt for this character sprite only"
 }
 ]
@@ -189,6 +197,7 @@ At least one character should have a secret connected to the world's central mys
 Do not make every character immediately loyal to the protagonist.
 Do not make the lore short. It should be dense enough to guide many future scenes.
 Keep visual_prompt concise, concrete, and usable for anime/semi-realistic visual novel sprites.
+For every character, create compact ai_* summaries for narrator prompts. They must be natural complete sentences, without ellipses. ai_prompt_brief must keep the labels Role, Personality, and Voice in English.
 """
 
 
@@ -211,8 +220,8 @@ Required JSON:
 "lore":"compact but rich world setup, 6 to 10 sentences",
 "starting_location":"short starting location",
 "starting_message":"opening VN scene, 4 to 7 sentences",
-"player_character":{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","appearance":"appearance","physical":"physical appearance","personality":"personality","clothing":"specific clothing","background":"background","goals":"goals and fears","visual_prompt":"English sprite prompt"},
-"characters":[{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","physical":"appearance","personality":"personality","clothing":"specific clothing","relationship":"relationship and tension","secret_or_conflict":"secret or conflict","visual_prompt":"English sprite prompt"}]
+"player_character":{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","appearance":"appearance","physical":"physical appearance","personality":"personality","clothing":"specific clothing","background":"background","goals":"goals and fears","ai_role_summary":"short role summary","ai_personality_summary":"short personality summary","ai_voice_summary":"short voice summary","ai_prompt_brief":"Name | Role: ... Personality: ... Voice: ...","visual_prompt":"English sprite prompt"},
+"characters":[{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","physical":"appearance","personality":"personality","clothing":"specific clothing","relationship":"relationship and tension","secret_or_conflict":"secret or conflict","ai_role_summary":"short role summary","ai_personality_summary":"short personality summary","ai_voice_summary":"short voice summary","ai_prompt_brief":"Name | Role: ... Personality: ... Voice: ...","visual_prompt":"English sprite prompt"}]
 }
 
 Rules:
@@ -223,6 +232,7 @@ Rules:
 - For narrator or third_person mode, starting_message must be external third-person/cinematic narration, not "I/my/we/you/your" narration.
 - For first_person mode, starting_message may be immersive first-person narration.
 - visual_prompt fields must be English.
+- ai_prompt_brief must use English labels Role, Personality, and Voice; its summary content should use the requested language and complete phrases without ellipses.
 - Keep every field concise and valid JSON.
 """
 
@@ -522,6 +532,10 @@ def normalize_story_seed(raw, prompt, participation_mode=None):
             "clothing": clean(player.get("clothing")),
             "background": clean(player.get("background")),
             "goals": clean(player.get("goals")),
+            "ai_role_summary": clean(player.get("ai_role_summary")),
+            "ai_personality_summary": clean(player.get("ai_personality_summary")),
+            "ai_voice_summary": clean(player.get("ai_voice_summary")),
+            "ai_prompt_brief": clean(player.get("ai_prompt_brief")),
             "visual_prompt": clean(player.get("visual_prompt")),
         },
         "characters": [normalize_seed_character(item) for item in characters[:4] if isinstance(item, dict) and clean(item.get("name"))],
@@ -542,6 +556,10 @@ def normalize_seed_character(item):
         "clothing": clean(item.get("clothing")),
         "relationship": clean(item.get("relationship")),
         "visual_prompt": clean(item.get("visual_prompt")),
+        "ai_role_summary": clean(item.get("ai_role_summary")),
+        "ai_personality_summary": clean(item.get("ai_personality_summary")),
+        "ai_voice_summary": clean(item.get("ai_voice_summary")),
+        "ai_prompt_brief": clean(item.get("ai_prompt_brief")),
     }
 
 
@@ -601,7 +619,10 @@ def enrich_story_creation_payload(payload):
         "Required JSON format:\n"
         "{\"player_character\": {...}, \"characters\": [{...}]}\n\n"
         "For every character, fill every field even when it was missing or weak: species, gender, character_type, aliases, "
-        "description, physical, personality, clothing, role, relationship, secrets, speech_style, visual_prompt.\n"
+        "description, physical, personality, clothing, role, relationship, secrets, speech_style, visual_prompt, "
+        "ai_role_summary, ai_personality_summary, ai_voice_summary, ai_prompt_brief.\n"
+        "The ai_* summaries are compact narrative-writing guidance. They must be short, natural, complete sentences, never truncated with ellipses. "
+        "ai_prompt_brief must use this exact label format: Name | Role: {ai_role_summary}. Personality: {ai_personality_summary}. Voice: {ai_voice_summary}.\n"
         f"Narrative fields must be in {language_instruction(payload.get('language'))}. "
         "Do not leave blank strings. Use 'nenhum alias conhecido' / 'no known aliases' only when aliases are truly unknown.\n"
         "For visual_prompt, use only these character fields as source: species, gender, physical, clothing. "
@@ -789,7 +810,7 @@ def apply_creation_sprite_prompts(payload, settings):
         )
 
 
-def apply_character_sprite_prompt(character, settings=None, story_id=None, expression="neutral", workbench_id=None, prompt_asset_type="sprite", visual_style=None):
+def apply_character_sprite_prompt(character, settings=None, story_id=None, expression="neutral", workbench_id=None, prompt_asset_type="sprite", visual_style=None, ai_role="story"):
     settings = settings or db.get_settings()
     workbench_id = workbench_id if workbench_id is not None else sprite_workbench_for_story_id(story_id, settings)
     visual_style = visual_style if visual_style is not None else (db.visual_style_for_story(story_id) if story_id else None)
@@ -805,7 +826,7 @@ def apply_character_sprite_prompt(character, settings=None, story_id=None, expre
         prompt_profile,
         fallback,
         story_id=story_id,
-        ai_role="story",
+        ai_role=ai_role,
     )
     return character
 
@@ -1034,6 +1055,10 @@ def merge_character_enrichment(original, enriched):
         "relationship",
         "secrets",
         "speech_style",
+        "ai_role_summary",
+        "ai_personality_summary",
+        "ai_voice_summary",
+        "ai_prompt_brief",
         "visual_prompt",
     ]:
         value = enriched.get(field)
@@ -1119,6 +1144,7 @@ def looks_portuguese_text(value):
 
 def enrich_introduced_character(story, scene, payload):
     candidate = introduced_candidate_from_payload(payload)
+    character_prompt = clean((payload or {}).get("character_prompt"))
     if not clean(candidate.get("name")):
         candidate["name"] = clean(payload.get("name"))
     settings = ai_client.settings_for_ai_role(db.get_settings(), "scene")
@@ -1140,13 +1166,16 @@ def enrich_introduced_character(story, scene, payload):
         "\"name\":\"\", \"species\":\"\", \"gender\":\"\", \"character_type\":\"\", "
         "\"aliases\":\"\", \"description\":\"\", \"physical\":\"\", \"personality\":\"\", "
         "\"clothing\":\"\", \"role\":\"\", \"relationship\":\"\", \"speech_style\":\"\", "
-        "\"visual_prompt\":\"\""
+        "\"ai_role_summary\":\"\", \"ai_personality_summary\":\"\", \"ai_voice_summary\":\"\", "
+        "\"ai_prompt_brief\":\"\", \"visual_prompt\":\"\""
         "}\n\n"
         "Create a character who belongs to this world and story, not just someone who appeared in the scene. "
         "The description must explain their apparent place in the setting, the tension they bring, and one or two concrete details that make them memorable. "
         "Personality must include motivation, contradiction, and how they react under pressure. "
         "Role and relationship must connect them to the current conflict or protagonist. "
         "Speech style must describe rhythm, vocabulary, emotional restraint, or verbal habits. "
+        "Also create compact AI narrative summaries: ai_role_summary, ai_personality_summary, and ai_voice_summary must be short, natural, complete sentences without ellipses. "
+        "ai_prompt_brief must use English labels exactly as: Name | Role: {ai_role_summary}. Personality: {ai_personality_summary}. Voice: {ai_voice_summary}. "
         "If the candidate only contains a weak phrase such as 'personagem presente em cena' or 'apareceu surpreso', ignore that weakness and infer from the story, scene text, and dialogue. "
         f"Narrative fields must be in {language_instruction(language)}: species, gender, character_type, aliases, description, physical, personality, clothing, role, relationship, secrets, speech_style. "
         "Do not leave any field empty.\n\n"
@@ -1164,6 +1193,7 @@ def enrich_introduced_character(story, scene, payload):
         f"Current scene text: {clean(scene.get('scene_text'))[:1000]}\n"
         f"Current scene dialogues: {json.dumps((scene.get('dialogues') or [])[-6:], ensure_ascii=False)}\n"
         f"Current characters on screen: {json.dumps(scene.get('characters_on_screen') or [], ensure_ascii=False)}\n\n"
+        f"User character creation prompt (highest priority):\n{character_prompt or '(not provided)'}\n\n"
         f"New speaker candidate:\n{json.dumps(candidate, ensure_ascii=False)}"
     )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -1196,7 +1226,7 @@ def enrich_introduced_character(story, scene, payload):
         raise RuntimeError(f"IA de narrativa falhou ao criar personagem: {exc}") from exc
     character = complete_character_record(character, story, scene)
     validate_ai_character_record(character, "personagem introduzido")
-    apply_character_sprite_prompt(character, settings, story_id=story.get("id"))
+    apply_character_sprite_prompt(character, settings, story_id=story.get("id"), ai_role="scene")
     character["importance"] = character.get("importance") or "secondary"
     character["is_player"] = 0
     return character
@@ -1224,6 +1254,10 @@ def introduced_candidate_from_payload(payload):
         "role": clean(source.get("role") or source.get("suggested_role")),
         "relationship": clean(source.get("relationship") or source.get("suggested_relationship") or source.get("reason")),
         "speech_style": clean(source.get("speech_style") or source.get("suggested_speech_style")),
+        "ai_role_summary": clean(source.get("ai_role_summary")),
+        "ai_personality_summary": clean(source.get("ai_personality_summary")),
+        "ai_voice_summary": clean(source.get("ai_voice_summary")),
+        "ai_prompt_brief": clean(source.get("ai_prompt_brief")),
         "visual_prompt": clean(source.get("visual_prompt") or source.get("suggested_visual_prompt")),
         "importance": clean(source.get("importance")) or "secondary",
     }
@@ -1246,6 +1280,10 @@ def merge_introduced_character(original, enriched):
         "role",
         "relationship",
         "speech_style",
+        "ai_role_summary",
+        "ai_personality_summary",
+        "ai_voice_summary",
+        "ai_prompt_brief",
         "visual_prompt",
     ]:
         value = enriched.get(field)
@@ -1290,12 +1328,90 @@ def character_text(character):
     )
 
 
-def improve_text(payload):
+def generate_character_ai_summary(story, character):
+    story = story or {}
+    character = character or {}
+    if not clean(character.get("name")):
+        raise ValueError("Personagem sem nome.")
+    settings = ai_client.settings_for_ai_role(db.get_settings(), "scene")
+    language = story_language(story)
+    system = (
+        "You create compact character guidance for a visual novel narrator prompt. "
+        "Return only valid JSON with ai_role_summary, ai_personality_summary, ai_voice_summary, and ai_prompt_brief. "
+        f"Summary content must be written in {language_instruction(language)}. "
+        "The ai_prompt_brief labels must remain exactly in English: Role, Personality, Voice. "
+        "Write short, natural, complete sentences. Never use ellipses or cut a phrase in the middle."
+    )
+    recent_scenes = (story.get("scenes") or [])[-3:]
+    user = (
+        "Required JSON format:\n"
+        "{"
+        "\"ai_role_summary\":\"\", "
+        "\"ai_personality_summary\":\"\", "
+        "\"ai_voice_summary\":\"\", "
+        "\"ai_prompt_brief\":\"\""
+        "}\n\n"
+        "ai_prompt_brief must use exactly this format:\n"
+        "{character_name} | Role: {ai_role_summary}. Personality: {ai_personality_summary}. Voice: {ai_voice_summary}.\n\n"
+        "Keep ai_prompt_brief around 220 to 320 characters when possible. "
+        "Focus only on how the narrator should write this character now: scene role, practical personality, and voice/speech style.\n\n"
+        f"Story title: {story.get('title') or ''}\n"
+        f"Story language: {language}\n"
+        f"Genre: {story.get('genre') or ''}\n"
+        f"Tone: {story.get('tone') or ''}\n"
+        f"Lore summary: {clean(story.get('lore'))[:900]}\n\n"
+        f"Character record:\n{json.dumps(character, ensure_ascii=False)}\n\n"
+        f"Recent scenes:\n{json.dumps(recent_scenes, ensure_ascii=False)[:2200]}"
+    )
+    request_payload = {
+        "model": settings.get("ollama_model"),
+        "character_id": character.get("id"),
+        "name": character.get("name"),
+    }
+    try:
+        db.add_api_log("ollama", "character_ai_summary_regenerated", request_payload, status="started", story_id=story.get("id"))
+        result = chat_json(
+            settings.get("ollama_url"),
+            settings.get("ollama_model"),
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            0.25,
+            settings=settings,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("A IA nao retornou um objeto JSON.")
+        normalized = db.normalize_character_ai_summaries({**character, **result})
+        response = {
+            "ai_role_summary": clean(normalized.get("ai_role_summary")),
+            "ai_personality_summary": clean(normalized.get("ai_personality_summary")),
+            "ai_voice_summary": clean(normalized.get("ai_voice_summary")),
+            "ai_prompt_brief": clean(normalized.get("ai_prompt_brief")),
+        }
+        db.add_api_log(
+            "ollama",
+            "character_ai_summary_regenerated",
+            request_payload,
+            response,
+            story_id=story.get("id"),
+        )
+        return response
+    except Exception as exc:
+        db.add_api_log(
+            "ollama",
+            "character_ai_summary_regenerated",
+            request_payload,
+            status="error",
+            error=str(exc),
+            story_id=story.get("id"),
+        )
+        raise RuntimeError(f"IA de narrativa falhou ao regenerar resumo do personagem: {exc}") from exc
+
+
+def improve_text(payload, ai_role="scene"):
     text = clean(payload.get("text"))
     if not text:
         raise ValueError("Texto ausente para melhoria por IA.")
 
-    settings = ai_client.settings_for_ai_role(db.get_settings(), "scene")
+    settings = ai_client.settings_for_ai_role(db.get_settings(), ai_role)
     output_language = language_instruction(settings.get("default_language"))
     field_label = clean(payload.get("field_label")) or "field"
     field_type = clean(payload.get("field_type")) or "description"
@@ -1438,6 +1554,17 @@ def generate_workbench_visual_prompt(source_text, asset_type, workbench_id, prom
             "The visual_prompt must be detailed, entirely in English, and suitable for a static wide background. "
             "Use concrete visual details. Do not output abstract instructions such as unique memorable landmark, environmental storytelling objects, or details tied to story conflict. "
             "Do not add copyrighted artist names, watermarks, UI text, or camera metadata."
+        )
+    elif normalize_prompt_asset_type(asset_type) == "appearance_reference":
+        system = (
+            "You adapt a two-image appearance-transfer request for a specific ComfyUI workflow. "
+            "Return only valid JSON: {\"visual_prompt\":\"...\"}. "
+            "Image 1 is the character whose identity must be preserved. Image 2 is the sole visual source for the new outfit. "
+            "The final visual_prompt must explicitly instruct the workflow to replace the character's outfit with the outfit from image 2. "
+            "Do not describe, infer, summarize, translate, or reinterpret the garments, colors, materials, accessories, stitching, or silhouette visible in image 2. "
+            "Do not replace the image reference with a text-designed outfit, even if the story or example mentions clothing details. "
+            "You may include identity-preservation constraints required by the configured prompt style, but image 2 must remain the outfit source of truth. "
+            "The visual_prompt must be entirely in English and must not include character names, story context, copyrighted artist names, watermarks, or UI text."
         )
     else:
         system = (
@@ -2487,6 +2614,7 @@ def generate_scene(story_id, user_input, speaker_focus=None, story_override=None
         base_user_prompt = build_narrator_user_prompt(story, user_input, narrative_context)
         user_prompt = f"{base_user_prompt}{retry_suffix}"
         budget_log = narrator_prompt_budget_log(settings, system_prompt, user_prompt, attempt)
+        context_stats = narrative_context.get(CONTEXT_STATS_KEY) or {}
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -2502,8 +2630,14 @@ def generate_scene(story_id, user_input, speaker_focus=None, story_override=None
             "recent_scene_states_chars": len(str(narrative_context.get("recent_scene_states") or "")),
             "output_requirements_chars": len(str(narrative_context.get("output_requirements") or "")),
             "task_chars": len(str(narrative_context.get("task") or "")),
-            "appearance_count_sent": (narrative_context.get(CONTEXT_STATS_KEY) or {}).get("appearance_count_sent", 0),
-            "omitted_appearances_count": (narrative_context.get(CONTEXT_STATS_KEY) or {}).get("omitted_appearances_count", 0),
+            "appearance_count_sent": context_stats.get("appearance_count_sent", 0),
+            "omitted_appearances_count": context_stats.get("omitted_appearances_count", 0),
+            "active_character_brief_character_count": context_stats.get("active_character_brief_character_count", 0),
+            "active_character_brief_included_characters": context_stats.get("active_character_brief_included_characters", []),
+            "active_character_brief_omitted_characters": context_stats.get("active_character_brief_omitted_characters", []),
+            "active_character_brief_used_saved_ai_summary": context_stats.get("active_character_brief_used_saved_ai_summary", 0),
+            "active_character_brief_generated_missing_summary": context_stats.get("active_character_brief_generated_missing_summary", 0),
+            "active_character_brief_was_compressed": context_stats.get("active_character_brief_was_compressed", False),
             "base_prompt_chars": len(base_user_prompt),
             "user_prompt_chars": len(user_prompt),
             "prompt_preview": user_prompt,
@@ -2596,11 +2730,15 @@ def active_narrator_system_prompt(settings, prompt_mode=None):
 
 def compact_narrative_context_for_4k(context):
     result = {}
+    stats = dict((context or {}).get(CONTEXT_STATS_KEY) or {})
     for key, value in (context or {}).items():
         if key == CONTEXT_STATS_KEY:
-            result[key] = value
-        else:
-            result[key] = compact_context_section(key, value, COMPACT_CONTEXT_PREFERRED_LIMITS.get(key, 500))
+            continue
+        compacted = compact_context_section(key, value, COMPACT_CONTEXT_PREFERRED_LIMITS.get(key, 500))
+        if key == "active_character_brief" and compacted != str(value or "").strip():
+            stats["active_character_brief_was_compressed"] = True
+        result[key] = compacted
+    result[CONTEXT_STATS_KEY] = stats
     return result
 
 
@@ -2638,18 +2776,94 @@ def compact_narrative_context_for_budget(context, story, user_input, system_prom
 
 def compact_narrative_context_with_limits(context, limits):
     result = {}
+    stats = dict((context or {}).get(CONTEXT_STATS_KEY) or {})
     for key, value in (context or {}).items():
         if key == CONTEXT_STATS_KEY:
-            result[key] = value
             continue
-        result[key] = compact_context_section(key, value, int(limits.get(key, COMPACT_CONTEXT_PREFERRED_LIMITS.get(key, 500))))
+        compacted = compact_context_section(key, value, int(limits.get(key, COMPACT_CONTEXT_PREFERRED_LIMITS.get(key, 500))))
+        if key == "active_character_brief" and compacted != str(value or "").strip():
+            stats["active_character_brief_was_compressed"] = True
+        result[key] = compacted
+    result[CONTEXT_STATS_KEY] = stats
     return result
 
 
 def compact_context_section(key, value, limit):
+    if key == "active_character_brief":
+        return compact_active_character_brief(value, limit)
     if key == "recent_scene_states":
         return compact_recent_scenes(value, limit)
     return compact(value, limit)
+
+
+def compact_active_character_brief(value, limit):
+    text = str(value or "").replace("\r", "").strip()
+    if len(text) <= limit:
+        return text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return compact(text, limit)
+    separator_chars = max(0, len(lines) - 1)
+    available = max(0, int(limit or 0) - separator_chars)
+    base_limit = int(available / max(1, len(lines)))
+    remainder = available - (base_limit * len(lines))
+    compacted_lines = []
+    for index, line in enumerate(lines):
+        line_limit = base_limit + (1 if index < remainder else 0)
+        compacted_lines.append(compact_active_character_brief_line(line, line_limit))
+    return "\n".join(compacted_lines)
+
+
+def compact_active_character_brief_line(value, limit):
+    text = str(value or "").replace("\r", " ").strip()
+    text = " ".join(text.split())
+    limit = int(limit or 0)
+    if len(text) <= limit:
+        return text
+    separator = " | "
+    personality_marker = ". Personalidade: "
+    speech_marker = ". Fala: "
+    if separator not in text or personality_marker not in text or speech_marker not in text:
+        return hard_compact_context_line(text, limit)
+    name, remainder = text.split(separator, 1)
+    role, remainder = remainder.split(personality_marker, 1)
+    personality, speech = remainder.split(speech_marker, 1)
+    speech = speech.rstrip(".")
+    name = hard_compact_context_line(name, min(len(name), max(12, int(limit * 0.22))))
+    fixed = len(name) + len(separator) + len(personality_marker) + len(speech_marker) + 2
+    available = limit - fixed
+    if available < 18:
+        return hard_compact_context_line(text, limit)
+    role_limit = max(6, int(available * 0.32))
+    personality_limit = max(6, int(available * 0.38))
+    speech_limit = max(6, available - role_limit - personality_limit)
+    result = (
+        f"{name}{separator}{hard_compact_context_line(role, role_limit)}"
+        f"{personality_marker}{hard_compact_context_line(personality, personality_limit)}"
+        f"{speech_marker}{hard_compact_context_line(speech, speech_limit)}."
+    )
+    if len(result) <= limit:
+        return result
+    overflow = len(result) - limit
+    speech_limit = max(3, speech_limit - overflow)
+    return (
+        f"{name}{separator}{hard_compact_context_line(role, role_limit)}"
+        f"{personality_marker}{hard_compact_context_line(personality, personality_limit)}"
+        f"{speech_marker}{hard_compact_context_line(speech, speech_limit)}."
+    )
+
+
+def hard_compact_context_line(value, limit):
+    text = str(value or "").replace("\r", " ").strip()
+    text = " ".join(text.split())
+    limit = int(limit or 0)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[:limit].rstrip(" ,.;:")
 
 
 def compact_recent_scenes(value, limit):
@@ -3094,9 +3308,6 @@ def stabilize_scene_cast(story, scene, user_input, raw_response=None):
             item for item in scene.get("characters_on_screen") or []
             if normalize_person_key((item or {}).get("name")) not in invisible_keys
         ]
-    if not previous_visible and not scene.get("characters_on_screen"):
-        return scene
-
     blocked_names = manual_removed_names_for_next_scene(story, previous_scene, user_input)
     blocked_names.update(direct_exit_names(user_input, previous_visible))
     continuity = normalize_character_continuity(
@@ -3168,11 +3379,88 @@ def stabilize_scene_cast(story, scene, user_input, raw_response=None):
                 }
             )
 
+    current = ensure_speaking_visual_characters_present(story, scene, current, blocked_names, invisible_keys)
+
     for item in current:
         item["expression"] = "neutral"
     scene["characters_on_screen"] = current[:6]
     scene["character_continuity"] = continuity
     return scene
+
+
+def ensure_speaking_visual_characters_present(story, scene, current, blocked_names=None, invisible_keys=None):
+    blocked_names = blocked_names or set()
+    invisible_keys = invisible_keys or set()
+    visual_lookup = registered_visual_character_lookup(story, invisible_keys)
+    if not visual_lookup:
+        return current
+    current = [dict(item) for item in current if isinstance(item, dict)]
+    current_keys = {normalize_person_key(item.get("name")) for item in current if normalize_person_key(item.get("name"))}
+    speaking_keys = []
+    seen = set()
+    for dialogue in scene.get("dialogues") or []:
+        key = normalize_person_key((dialogue or {}).get("character"))
+        if not key or key in seen or key in {"narrador", "narrator"}:
+            continue
+        seen.add(key)
+        if key in visual_lookup:
+            speaking_keys.append(key)
+    if not speaking_keys:
+        return current
+    required_speakers = set(speaking_keys)
+    current_character_ids = {
+        visual_lookup[key].get("id")
+        for key in current_keys
+        if key in visual_lookup and visual_lookup[key].get("id")
+    }
+    for key in speaking_keys:
+        if key in current_keys or key in blocked_names or key in invisible_keys:
+            continue
+        character = visual_lookup.get(key)
+        if not character:
+            continue
+        if character.get("id") in current_character_ids:
+            continue
+        if len(current) >= 6:
+            removable_index = next(
+                (index for index in range(len(current) - 1, -1, -1) if normalize_person_key(current[index].get("name")) not in required_speakers),
+                None,
+            )
+            if removable_index is None:
+                break
+            removed = current.pop(removable_index)
+            current_keys.discard(normalize_person_key(removed.get("name")))
+        current.append({"name": clean(character.get("name")), "position": next_cast_position(current), "expression": "neutral"})
+        current_keys.add(key)
+        current_character_ids.add(character.get("id"))
+    return current
+
+
+def registered_visual_character_lookup(story, invisible_keys=None):
+    invisible_keys = invisible_keys or set()
+    sprite_character_ids = {
+        asset.get("character_id")
+        for asset in (story or {}).get("assets") or []
+        if isinstance(asset, dict) and asset.get("asset_type") == "sprite" and (asset.get("file_path") or asset.get("url"))
+    }
+    lookup = {}
+    for character in (story or {}).get("characters") or []:
+        if not isinstance(character, dict) or not character.get("id") or character.get("id") not in sprite_character_ids:
+            continue
+        keys = [normalize_person_key(character.get("name"))]
+        keys.extend(normalize_person_key(alias) for alias in str(character.get("aliases") or "").split(","))
+        for key in keys:
+            if key and key not in invisible_keys:
+                lookup[key] = character
+    return lookup
+
+
+def next_cast_position(current):
+    used = {normalize_person_key(item.get("position")) for item in current if isinstance(item, dict)}
+    for position in ["center", "left", "right", "far-left", "far-right"]:
+        if normalize_person_key(position) not in used:
+            return position
+    return "center"
 
 
 def invisible_player_visual_keys(story):

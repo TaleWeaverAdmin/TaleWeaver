@@ -105,6 +105,10 @@ def init_db():
                 relationship TEXT,
                 secrets TEXT,
                 speech_style TEXT,
+                ai_role_summary TEXT,
+                ai_personality_summary TEXT,
+                ai_voice_summary TEXT,
+                ai_prompt_brief TEXT,
                 visual_prompt TEXT,
                 expression_prompts TEXT NOT NULL DEFAULT '{}',
                 active_appearance_id TEXT,
@@ -306,6 +310,10 @@ def init_db():
                 "aliases": "TEXT",
                 "description": "TEXT",
                 "clothing": "TEXT",
+                "ai_role_summary": "TEXT",
+                "ai_personality_summary": "TEXT",
+                "ai_voice_summary": "TEXT",
+                "ai_prompt_brief": "TEXT",
                 "expression_prompts": "TEXT NOT NULL DEFAULT '{}'",
                 "active_appearance_id": "TEXT",
             },
@@ -319,6 +327,7 @@ def init_db():
         backfill_visual_style_backgrounds(conn)
         run_once(conn, "cleanup_visual_style_background_prompts_v1", cleanup_visual_style_background_prompts)
         run_once(conn, "story_scenarios_v1", backfill_story_scenarios)
+        run_once(conn, "character_ai_summaries_v3", backfill_character_ai_summaries)
 
 
 def ensure_columns(conn, table, columns):
@@ -400,6 +409,34 @@ def backfill_story_scenarios(conn):
                 "id": scenario_id, "description": description, "prompt": metadata.get("source_prompt") or description,
                 "enhanced_prompt": asset["prompt"] or "", "asset_id": asset["id"],
             }
+
+
+def backfill_character_ai_summaries(conn):
+    timestamp = now_ms()
+    rows = conn.execute("SELECT * FROM characters").fetchall()
+    for row in rows:
+        source = row_to_dict(row)
+        source["ai_role_summary"] = ""
+        source["ai_personality_summary"] = ""
+        source["ai_voice_summary"] = ""
+        source["ai_prompt_brief"] = ""
+        data = normalize_character_ai_summaries(source)
+        conn.execute(
+            """
+            UPDATE characters
+            SET ai_role_summary = ?, ai_personality_summary = ?, ai_voice_summary = ?,
+                ai_prompt_brief = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                data.get("ai_role_summary") or "",
+                data.get("ai_personality_summary") or "",
+                data.get("ai_voice_summary") or "",
+                data.get("ai_prompt_brief") or "",
+                timestamp,
+                row["id"],
+            ),
+        )
 
 
 def normalize_scenario_name(value):
@@ -1342,6 +1379,7 @@ def get_story(story_id):
         story = conn.execute("SELECT * FROM stories WHERE id = ?", (story_id,)).fetchone()
         if not story:
             return None
+        ensure_character_ai_summaries(conn, story_id)
         characters = conn.execute(
             "SELECT * FROM characters WHERE story_id = ? ORDER BY is_player DESC, name",
             (story_id,),
@@ -1448,6 +1486,14 @@ def create_story(payload):
     starting_message = payload.get("starting_message") or ""
     if participation_mode == "first_person" and isinstance(player, dict):
         player["visual_prompt"] = ""
+    if isinstance(player, dict) and player.get("name"):
+        player = normalize_character_ai_summaries(player)
+        payload["player_character"] = player
+    payload["characters"] = [
+        normalize_character_ai_summaries(character)
+        for character in payload.get("characters") or []
+        if isinstance(character, dict)
+    ]
 
     with connect() as conn:
         conn.execute(
@@ -1583,16 +1629,171 @@ def compact_text(value, limit):
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def compact_ai_summary(value, limit=110, fallback=""):
+    text = " ".join(str(value or fallback or "").replace("\r", " ").split())
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text.rstrip(" .") + "."
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    first_sentence = next((sentence.strip() for sentence in sentences if sentence.strip()), "")
+    if first_sentence and len(first_sentence) <= limit + 45:
+        return first_sentence.rstrip(" .") + "."
+    selected = []
+    length = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        extra = len(sentence) + (1 if selected else 0)
+        if selected and length + extra > limit:
+            break
+        if not selected and len(sentence) > limit:
+            break
+        selected.append(sentence)
+        length += extra
+    if selected:
+        return " ".join(selected).rstrip(" .") + "."
+    fragment = compact_ai_fragment(first_sentence or text, limit)
+    if fragment:
+        return fragment.rstrip(" .") + "."
+    words = text.split()
+    selected_words = []
+    length = 0
+    for word in words:
+        extra = len(word) + (1 if selected_words else 0)
+        if selected_words and length + extra > limit:
+            break
+        if not selected_words and extra > limit:
+            selected_words.append(word[:limit].rstrip(" ,.;:"))
+            break
+        selected_words.append(word)
+        length += extra
+    return " ".join(selected_words).rstrip(" ,.;:") + "."
+
+
+def compact_ai_fragment(value, limit):
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    candidates = []
+    for separator in ["; ", ", ", " que ", " quando ", " enquanto ", " mas ", " e "]:
+        if separator in text:
+            part = text.split(separator, 1)[0].strip(" ,.;:")
+            if 18 <= len(part) <= limit:
+                candidates.append(part)
+    if candidates:
+        return max(candidates, key=len)
+    return ""
+
+
+def build_ai_prompt_brief(data):
+    name = " ".join(str((data or {}).get("name") or "Unnamed character").split())
+    role = compact_ai_summary((data or {}).get("ai_role_summary"), 80, (data or {}).get("role") or (data or {}).get("character_type") or (data or {}).get("description"))
+    personality = compact_ai_summary((data or {}).get("ai_personality_summary"), 90, (data or {}).get("personality") or (data or {}).get("description"))
+    voice = compact_ai_summary((data or {}).get("ai_voice_summary"), 90, (data or {}).get("speech_style") or (data or {}).get("voice"))
+    return f"{name} | Role: {role} Personality: {personality} Voice: {voice}"
+
+
+def normalize_character_ai_summaries(data):
+    result = dict(data or {})
+    result["ai_role_summary"] = compact_ai_summary(
+        result.get("ai_role_summary"),
+        80,
+        result.get("role") or result.get("character_type") or result.get("description"),
+    )
+    result["ai_personality_summary"] = compact_ai_summary(
+        result.get("ai_personality_summary"),
+        90,
+        result.get("personality") or result.get("description"),
+    )
+    result["ai_voice_summary"] = compact_ai_summary(
+        result.get("ai_voice_summary"),
+        90,
+        result.get("speech_style") or result.get("voice"),
+    )
+    result["ai_prompt_brief"] = build_ai_prompt_brief(result)
+    return result
+
+
+def log_api_event(conn, provider, operation, request_payload=None, response_payload=None, status="ok", error="", story_id=None):
+    conn.execute(
+        """
+        INSERT INTO api_logs (
+            id, story_id, provider, operation, request_payload, response_payload, status, error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("log"),
+            story_id,
+            provider,
+            operation,
+            json.dumps(request_payload or {}, ensure_ascii=False),
+            json.dumps(response_payload or {}, ensure_ascii=False),
+            status,
+            error,
+            now_ms(),
+        ),
+    )
+
+
+def ensure_character_ai_summaries(conn, story_id):
+    rows = conn.execute(
+        """
+        SELECT * FROM characters
+        WHERE story_id = ?
+          AND (
+            ai_role_summary IS NULL OR TRIM(ai_role_summary) = ''
+            OR ai_personality_summary IS NULL OR TRIM(ai_personality_summary) = ''
+            OR ai_voice_summary IS NULL OR TRIM(ai_voice_summary) = ''
+            OR ai_prompt_brief IS NULL OR TRIM(ai_prompt_brief) = ''
+          )
+        """,
+        (story_id,),
+    ).fetchall()
+    for row in rows:
+        data = normalize_character_ai_summaries(row_to_dict(row))
+        conn.execute(
+            """
+            UPDATE characters
+            SET ai_role_summary = ?, ai_personality_summary = ?, ai_voice_summary = ?,
+                ai_prompt_brief = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                data.get("ai_role_summary") or "",
+                data.get("ai_personality_summary") or "",
+                data.get("ai_voice_summary") or "",
+                data.get("ai_prompt_brief") or "",
+                now_ms(),
+                row["id"],
+            ),
+        )
+        log_api_event(
+            conn,
+            "local",
+            "character_ai_summary_missing",
+            {"character_id": row["id"], "name": row["name"]},
+            {
+                "ai_prompt_brief": data.get("ai_prompt_brief") or "",
+                "generated_missing_summary": True,
+            },
+            story_id=story_id,
+        )
+
+
 def insert_character(conn, story_id, data, is_player=False, importance="secondary"):
     timestamp = now_ms()
     character_id = new_id("char")
+    data = normalize_character_ai_summaries(data)
     conn.execute(
         """
         INSERT INTO characters (
             id, story_id, name, species, gender, character_type, aliases, description,
             physical, personality, clothing, role, relationship, secrets, speech_style,
+            ai_role_summary, ai_personality_summary, ai_voice_summary, ai_prompt_brief,
             visual_prompt, expression_prompts, status, importance, is_player, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
         """,
         (
             character_id,
@@ -1610,6 +1811,10 @@ def insert_character(conn, story_id, data, is_player=False, importance="secondar
             data.get("relationship") or "",
             data.get("secrets") or "",
             data.get("speech_style") or "",
+            data.get("ai_role_summary") or "",
+            data.get("ai_personality_summary") or "",
+            data.get("ai_voice_summary") or "",
+            data.get("ai_prompt_brief") or "",
             data.get("visual_prompt") or "",
             json.dumps(normalize_character_expression_prompts(data.get("expression_prompts")), ensure_ascii=False),
             importance,
@@ -1841,6 +2046,7 @@ def delete_character(character_id):
 
 def update_character(character_id, payload):
     timestamp = now_ms()
+    current = get_character(character_id) or {}
     fields = [
         "name",
         "species",
@@ -1855,11 +2061,17 @@ def update_character(character_id, payload):
         "relationship",
         "secrets",
         "speech_style",
+        "ai_role_summary",
+        "ai_personality_summary",
+        "ai_voice_summary",
+        "ai_prompt_brief",
         "visual_prompt",
         "expression_prompts",
         "status",
         "importance",
     ]
+    if any(field in payload for field in ["ai_role_summary", "ai_personality_summary", "ai_voice_summary", "ai_prompt_brief", "name", "role", "character_type", "description", "personality", "speech_style"]):
+        payload = normalize_character_ai_summaries({**current, **payload})
     updates = [field for field in fields if field in payload]
     if not updates:
         return get_character(character_id)
@@ -1871,6 +2083,20 @@ def update_character(character_id, payload):
     ] + [timestamp, character_id]
     with connect() as conn:
         conn.execute(f"UPDATE characters SET {sql} WHERE id = ?", values)
+        if any(field in updates for field in ["ai_role_summary", "ai_personality_summary", "ai_voice_summary", "ai_prompt_brief"]):
+            log_api_event(
+                conn,
+                "local",
+                "character_ai_summary_saved",
+                {"character_id": character_id, "fields": updates},
+                {
+                    "ai_prompt_brief": payload.get("ai_prompt_brief") or "",
+                    "ai_role_summary": payload.get("ai_role_summary") or "",
+                    "ai_personality_summary": payload.get("ai_personality_summary") or "",
+                    "ai_voice_summary": payload.get("ai_voice_summary") or "",
+                },
+                story_id=current.get("story_id"),
+            )
     return get_character(character_id)
 
 

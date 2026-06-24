@@ -23,6 +23,9 @@ PUBLIC_DIR = ROOT_DIR / "public"
 ICONS_DIR = ROOT_DIR / "icons"
 OFFICIAL_EXPRESSIONS = ["neutral", "happy", "sad", "angry", "thoughtful", "surprised", "embarrassed", "scared"]
 SPRITE_EXPRESSION_KEYS = [item for item in OFFICIAL_EXPRESSIONS if item != "neutral"]
+APPEARANCE_REFERENCE_TRANSFER_PROMPT = "Replace the character's outfit with the outfit shown in image 2."
+PENDING_PATH_DELETES = set()
+PENDING_PATH_DELETES_LOCK = threading.Lock()
 
 
 class MissingStoryReferenceError(ValueError):
@@ -121,7 +124,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 style_id = path.strip("/").split("/")[2]
                 return self.upload_visual_style_cover(style_id)
             if path == "/api/ai/improve":
-                return self.send_json(narrative.improve_text(payload))
+                ai_role = "story" if payload.get("ai_role") == "story" else "scene"
+                service_manager.activate_text_ai_role(ai_role, db.get_settings())
+                return self.send_json(narrative.improve_text(payload, ai_role=ai_role))
             if path == "/api/ai/story-seed":
                 service_manager.activate_text_ai_role("story", db.get_settings())
                 return self.send_json(narrative.generate_story_seed(payload))
@@ -147,8 +152,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.upload_story_reference(story_id, requested_name)
             if path.endswith("/expression-prompts") and path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
-                service_manager.activate_text_ai_role("story", db.get_settings())
-                return self.send_json(narrative.generate_character_expression_prompts(story_id, only_missing=True, ai_role="story"))
+                service_manager.activate_text_ai_role("scene", db.get_settings())
+                return self.send_json(narrative.generate_character_expression_prompts(story_id, only_missing=True, ai_role="scene"))
             if path.endswith("/duplicate") and path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
                 story = db.duplicate_story(story_id)
@@ -205,12 +210,16 @@ class AppHandler(BaseHTTPRequestHandler):
                     return self.send_error_json(404, "Historia nao encontrada.")
                 service_manager.activate_text_ai_role("scene", db.get_settings())
                 character_payload = narrative.complete_character_record(payload, story, latest_scene(story))
-                narrative.apply_character_sprite_prompt(character_payload, db.get_settings(), story_id=story_id)
+                narrative.apply_character_sprite_prompt(character_payload, db.get_settings(), story_id=story_id, ai_role="scene")
                 return self.send_json(db.create_character(story_id, character_payload), 201)
             if path.endswith("/characters/introduce") and path.startswith("/api/stories/"):
                 story_id = path.split("/")[3]
                 service_manager.activate_text_ai_role("scene", db.get_settings())
                 return self.introduce_character(story_id, payload)
+            if path.endswith("/characters/generate") and path.startswith("/api/stories/"):
+                story_id = path.split("/")[3]
+                service_manager.activate_text_ai_role("scene", db.get_settings())
+                return self.generate_story_character(story_id, payload)
             if path.startswith("/api/characters/") and path.endswith("/image-prompt"):
                 parts = path.strip("/").split("/")
                 if len(parts) == 4:
@@ -230,6 +239,17 @@ class AppHandler(BaseHTTPRequestHandler):
                         ai_role="scene",
                     )
                     return self.send_json(story)
+            if path.startswith("/api/characters/") and path.endswith("/ai-summary/regenerate"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 5:
+                    character = db.get_character(parts[2])
+                    if not character:
+                        return self.send_error_json(404, "Personagem nao encontrado.")
+                    story = db.get_story(character.get("story_id"))
+                    if not story:
+                        return self.send_error_json(404, "Historia nao encontrada.")
+                    service_manager.activate_text_ai_role("scene", db.get_settings())
+                    return self.send_json(narrative.generate_character_ai_summary(story, character))
             if path.startswith("/api/characters/") and path.endswith("/appearances"):
                 parts = path.strip("/").split("/")
                 if len(parts) == 4:
@@ -375,6 +395,7 @@ class AppHandler(BaseHTTPRequestHandler):
         folder_exists = target.exists() and target.is_dir()
         if is_relative_to(target, stories_root) and folder_exists:
             deleted_dir, delete_error = delete_path_with_retries(target)
+        delete_pending = bool(delete_error and target.exists())
         if not story and not folder_exists:
             return self.send_error_json(404, "Historia nao encontrada.")
 
@@ -382,13 +403,14 @@ class AppHandler(BaseHTTPRequestHandler):
             "local",
             "story:delete",
             {"story_id": story_id},
-            {"story_found": bool(story), "deleted_dir": deleted_dir, "delete_error": delete_error},
+            {"story_found": bool(story), "deleted_dir": deleted_dir, "delete_pending": delete_pending, "delete_error": delete_error},
             story_id=story_id,
         )
         return self.send_json({
             "deleted": True,
             "story": story,
             "deleted_dir": deleted_dir,
+            "delete_pending": delete_pending,
             "delete_error": delete_error,
         })
 
@@ -573,6 +595,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
         prompt_profile = prompt_profile_for_visual_style(settings, visual_style, asset_type, requested_workbench)
         if prompt_profile and asset_type != "sprite" and not payload.get("prompt_is_visual"):
+            service_manager.activate_text_ai_role("scene", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt or prompt,
                 asset_type,
@@ -580,6 +603,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 prompt_profile,
                 prompt,
                 story_id=story_id,
+                ai_role="scene",
             )
             prompt_source = "ollama:workbench-profile"
         if asset_type == "background":
@@ -837,9 +861,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if improve_prompt:
                 profile = prompt_profile_for_visual_style(settings, visual_style, "background", workbench_id)
                 if profile:
-                    service_manager.activate_text_ai_role("story", settings)
+                    service_manager.activate_text_ai_role("scene", settings)
                     visual_prompt = narrative.generate_workbench_visual_prompt(
-                        source_prompt, "background", workbench_id, profile, normalized_prompt, story_id=story_id, ai_role="story"
+                        source_prompt, "background", workbench_id, profile, normalized_prompt, story_id=story_id, ai_role="scene"
                     )
                     enhanced_prompt = visual_prompt
             visual_prompt = narrative.finalize_background_comfy_prompt(apply_background_style_prompt(visual_style, visual_prompt))
@@ -960,15 +984,15 @@ class AppHandler(BaseHTTPRequestHandler):
             "example": (visual_style or {}).get("appearance_reference_prompt_example" if additional_reference else "appearance_prompt_example") or "",
         }
         if payload.get("improve_prompt") and prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
-            service_manager.activate_text_ai_role("story", settings)
+            service_manager.activate_text_ai_role("scene", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt,
-                "appearance",
+                workbench_type,
                 workbench_id,
                 prompt_profile,
                 source_prompt,
                 story_id=character.get("story_id"),
-                ai_role="story",
+                ai_role="scene",
             )
             prompt_source = "ollama:appearance-profile"
 
@@ -1113,15 +1137,15 @@ class AppHandler(BaseHTTPRequestHandler):
             "example": (visual_style or {}).get("appearance_reference_prompt_example" if additional_reference else "appearance_prompt_example") or "",
         }
         if payload.get("improve_prompt") and prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
-            service_manager.activate_text_ai_role("story", settings)
+            service_manager.activate_text_ai_role("scene", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt,
-                "appearance",
+                workbench_type,
                 workbench_id,
                 prompt_profile,
                 source_prompt,
                 story_id=character.get("story_id"),
-                ai_role="story",
+                ai_role="scene",
             )
             prompt_source = "ollama:appearance-profile"
 
@@ -1446,14 +1470,15 @@ class AppHandler(BaseHTTPRequestHandler):
         if not workbench_id:
             message = "Workflow de Alterar Aparencia Com Referencia" if story_reference else "Workflow de Alterar Aparencia"
             raise ValueError(f"Configure o {message} no estilo atual.")
-        source_prompt = appearance_update_change_prompt(update)
+        narrative_change_prompt = appearance_update_change_prompt(update)
+        source_prompt = APPEARANCE_REFERENCE_TRANSFER_PROMPT if story_reference else narrative_change_prompt
         if not source_prompt:
             raise ValueError("Prompt de alteracao de aparencia ausente.")
         prompt = source_prompt
         prompt_source = "appearance-update"
         prompt_profile = prompt_profile_for_visual_style(settings, visual_style, workbench_type, workbench_id)
         if prompt_profile and (prompt_profile.get("style") or prompt_profile.get("example")):
-            service_manager.activate_text_ai_role("story", settings)
+            service_manager.activate_text_ai_role("scene", settings)
             prompt = narrative.generate_workbench_visual_prompt(
                 source_prompt,
                 workbench_type,
@@ -1461,7 +1486,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 prompt_profile,
                 source_prompt,
                 story_id=story_id,
-                ai_role="story",
+                ai_role="scene",
             )
             prompt_source = "ollama:appearance-profile"
         return {
@@ -1469,6 +1494,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "visual_style": visual_style,
             "workbench_id": workbench_id,
             "source_prompt": source_prompt,
+            "narrative_change_prompt": narrative_change_prompt,
             "prompt": prompt,
             "prompt_source": prompt_source,
             "prompt_profile": prompt_profile,
@@ -1492,6 +1518,7 @@ class AppHandler(BaseHTTPRequestHandler):
         visual_style = prepared["visual_style"]
         workbench_id = prepared["workbench_id"]
         source_prompt = prepared["source_prompt"]
+        narrative_change_prompt = prepared.get("narrative_change_prompt") or ""
         prompt = prepared["prompt"]
         prompt_source = prepared["prompt_source"]
         prompt_profile = prepared["prompt_profile"]
@@ -1554,6 +1581,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "workbench": resolved_workbench_id,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
+                        "narrative_change_prompt": narrative_change_prompt,
                         "prompt_source": prompt_source,
                         "prompt_profile_applied": prompt_source == "ollama:appearance-profile",
                         "prompt_profile_style": (prompt_profile or {}).get("style") or "",
@@ -1587,6 +1615,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "workbench": resolved_workbench_id,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
+                    "narrative_change_prompt": narrative_change_prompt,
                     "prompt_source": prompt_source,
                     "prompt_profile_applied": prompt_source == "ollama:appearance-profile",
                     "generation_overrides": generation_overrides,
@@ -1807,12 +1836,14 @@ class AppHandler(BaseHTTPRequestHandler):
         source_prompt = build_prompt_test_source(asset_type, appearance, clothing)
         if not source_prompt:
             return self.send_error_json(400, "Informe uma aparencia ou vestimenta para testar o prompt.")
+        service_manager.activate_text_ai_role("scene", settings)
         visual_prompt = narrative.generate_workbench_visual_prompt(
             source_prompt,
             asset_type,
             workbench_id,
             prompt_profile,
             source_prompt,
+            ai_role="scene",
         )
         db.add_api_log(
             "local",
@@ -1864,6 +1895,41 @@ class AppHandler(BaseHTTPRequestHandler):
             story_id=story_id,
         )
         return self.send_json({"character": character, "story": updated_story, "already_exists": False}, 201)
+
+    def generate_story_character(self, story_id, payload):
+        story = db.get_story(story_id)
+        if not story:
+            return self.send_error_json(404, "Historia nao encontrada.")
+        prompt = str(payload.get("prompt") or "").strip()
+        if len(prompt) < 20:
+            return self.send_error_json(400, "Descreva o personagem usando pelo menos 20 caracteres.")
+        character_payload = narrative.enrich_introduced_character(
+            story,
+            latest_scene(story),
+            {
+                "character_prompt": prompt,
+                "candidate": {
+                    "description": prompt,
+                    "reason": prompt,
+                    "importance": "secondary",
+                },
+            },
+        )
+        name = str(character_payload.get("name") or "").strip()
+        if not name:
+            return self.send_error_json(502, "A IA de narrativa nao retornou um nome para o personagem.")
+        if find_character_by_name(story.get("characters") or [], name):
+            return self.send_error_json(409, f'Ja existe um personagem chamado "{name}" nesta historia.')
+        character = db.create_character(story_id, character_payload)
+        updated_story = db.get_story(story_id)
+        db.add_api_log(
+            "local",
+            "character:generate-from-prompt",
+            {"story_id": story_id, "prompt": prompt},
+            {"character_id": character.get("id"), "name": character.get("name")},
+            story_id=story_id,
+        )
+        return self.send_json({"character": character, "story": updated_story}, 201)
 
     def queue_comfy_image(
         self,
@@ -2017,6 +2083,7 @@ class AppHandler(BaseHTTPRequestHandler):
             workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background")
             prompt_profile = prompt_profile_for_visual_style(settings, visual_style, "background", workbench_id)
             if prompt_profile:
+                service_manager.activate_text_ai_role("scene", settings)
                 visual_prompt = narrative.generate_workbench_visual_prompt(
                     source_prompt,
                     "background",
@@ -2024,6 +2091,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     prompt_profile,
                     visual_prompt,
                     story_id=story_id,
+                    ai_role="scene",
                 )
             visual_prompt = narrative.finalize_background_comfy_prompt(apply_background_style_prompt(visual_style, visual_prompt))
             negative_prompt = background_negative_prompt(visual_style)
@@ -3037,13 +3105,14 @@ def parse_content_disposition(headers):
     return result
 
 
-def delete_path_with_retries(target, attempts=6):
+def delete_path_with_retries(target, attempts=6, schedule_on_failure=True):
     target = Path(target)
     errors = []
     for attempt in range(attempts):
         try:
             if not target.exists():
                 return True, ""
+            make_tree_writable(target)
             if target.is_dir():
                 shutil.rmtree(target, onerror=retry_remove_after_chmod)
             else:
@@ -3062,7 +3131,51 @@ def delete_path_with_retries(target, attempts=6):
             return True, ""
         if error:
             errors.append(error)
+    if target.exists() and schedule_on_failure:
+        schedule_path_delete_retry(target, errors[-1] if errors else "Falha ao remover arquivo.")
     return (not target.exists(), "" if not target.exists() else (errors[-1] if errors else "Falha ao remover arquivo."))
+
+
+def schedule_path_delete_retry(target, initial_error=""):
+    target = Path(target).resolve()
+    data_root = (ROOT_DIR / "data").resolve()
+    if not is_relative_to(target, data_root):
+        return False
+    key = str(target).lower()
+    with PENDING_PATH_DELETES_LOCK:
+        if key in PENDING_PATH_DELETES:
+            return True
+        PENDING_PATH_DELETES.add(key)
+    thread = threading.Thread(
+        target=run_scheduled_path_delete,
+        args=(target, initial_error),
+        name=f"delete-retry:{target.name}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def run_scheduled_path_delete(target, initial_error=""):
+    delays = [1, 2, 4, 8, 15, 30, 60, 120]
+    deleted = False
+    error = initial_error or ""
+    try:
+        for delay in delays:
+            time.sleep(delay)
+            deleted, error = delete_path_with_retries(target, attempts=2, schedule_on_failure=False)
+            if deleted:
+                break
+        db.add_api_log(
+            "local",
+            "file:delete-retry",
+            {"path": str(target), "initial_error": initial_error},
+            {"deleted": deleted, "error": "" if deleted else error},
+            story_id=story_id_from_story_path(target),
+        )
+    finally:
+        with PENDING_PATH_DELETES_LOCK:
+            PENDING_PATH_DELETES.discard(str(target).lower())
 
 
 def delete_path_with_powershell(target):
@@ -3092,8 +3205,20 @@ def delete_path_with_powershell(target):
 
 def retry_remove_after_chmod(func, path, _exc_info):
     try:
-        make_writable(Path(path))
+        make_tree_writable(Path(path))
         func(path)
+    except OSError:
+        pass
+
+
+def make_tree_writable(path):
+    path = Path(path)
+    make_writable(path)
+    if not path.is_dir():
+        return
+    try:
+        for child in path.rglob("*"):
+            make_writable(child)
     except OSError:
         pass
 
@@ -3103,6 +3228,14 @@ def make_writable(path):
         os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
     except OSError:
         pass
+
+
+def story_id_from_story_path(path):
+    try:
+        relative = Path(path).resolve().relative_to(STORIES_DIR.resolve())
+        return relative.parts[0] if relative.parts else None
+    except ValueError:
+        return None
 
 
 def is_relative_to(path, root):

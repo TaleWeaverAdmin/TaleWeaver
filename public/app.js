@@ -1,5 +1,5 @@
 const state = {
-  route: "dashboard",
+  route: "home",
   stories: [],
   activeStory: null,
   settings: null,
@@ -12,6 +12,7 @@ const state = {
   busy: false,
   status: "",
   modal: null,
+  messageDialog: null,
   activeCharacterId: "",
   characterEditId: "",
   characterPromptExpanded: false,
@@ -56,6 +57,429 @@ const state = {
 };
 
 let pendingStoryReferenceDecision = null;
+let pendingMessageDialogResolve = null;
+
+const SYSTEM_LANGUAGE_OPTIONS = [
+  { value: "pt-BR", label: "Portugu\u00eas (BR)" },
+  { value: "en", label: "English" },
+];
+
+const UI_COPY = {
+  "pt-BR": {
+    "status.processing": "Processando...",
+    "status.saving_settings": "Salvando configura\u00e7\u00f5es...",
+    "alert.settings_saved": "Configura\u00e7\u00f5es salvas.",
+    "settings.system_language": "Linguagem do sistema",
+  },
+  en: {
+    "status.processing": "Processing...",
+    "status.saving_settings": "Saving settings...",
+    "alert.settings_saved": "Settings saved.",
+    "settings.system_language": "System language",
+  },
+};
+
+const UI_TRANSLATIONS_EN = {
+  "Acoes da historia": "Story actions",
+  "Adicionar": "Add",
+  "Adicionar personagem": "Add character",
+  "Aparencia": "Appearance",
+  "Aparencia / descricao base": "Appearance / base description",
+  "Aparencia fisica": "Physical appearance",
+  "Aparencias": "Appearances",
+  "Aproximado": "Close",
+  "Arquivar": "Archive",
+  "Ativa": "Active",
+  "Ativar Expressoes": "Enable expressions",
+  "Ativar thinking do modelo quando suportado": "Enable model thinking when supported",
+  "Ativar thinking mode no template do llama.cpp": "Enable thinking mode in the llama.cpp template",
+  "Atualizar": "Refresh",
+  "Atualizar sprite": "Refresh sprite",
+  "Aviso": "Notice",
+  "Background atual": "Current background",
+  "Base URL": "Base URL",
+  "Biblioteca local de visual novels geradas por IA": "Local library of AI-generated visual novels",
+  "Campos avancados de cenarios": "Advanced background fields",
+  "Campos avancados de sprites": "Advanced sprite fields",
+  "Cancelar": "Cancel",
+  "Cena": "Scene",
+  "Cena invalida: a IA nao retornou texto de cena ou dialogo.": "Invalid scene: the AI did not return scene text or dialogue.",
+  "Cenario ativo": "Active scenario",
+  "Cenario checkpoint": "Background checkpoint",
+  "Cenario CFG": "Background CFG",
+  "Cenario altura": "Background height",
+  "Cenario largura": "Background width",
+  "Cenario sampler": "Background sampler",
+  "Cenario scheduler": "Background scheduler",
+  "Cenario seed": "Background seed",
+  "Cenario steps": "Background steps",
+  "Cenarios": "Scenarios",
+  "Checkpoints detectados": "Detected checkpoints",
+  "Configuracoes de cenario ficam em Estilos visuais. O checkpoint padrao acima e usado quando o estilo nao define um checkpoint proprio.": "Background settings live in Visual styles. The default checkpoint above is used when the style does not define its own checkpoint.",
+  "Clique em continuar para gerar a primeira resposta.": "Click continue to generate the first response.",
+  "Cole a chave aqui": "Paste the key here",
+  "Comando de geracao de prompt para aparencias": "Prompt-generation command for appearances",
+  "Comando de geracao de prompt para aparencias com referencia": "Prompt-generation command for appearances with reference",
+  "Comando de geracao de prompt para cenarios": "Prompt-generation command for backgrounds",
+  "Comando de geracao de prompt para sprites": "Prompt-generation command for sprites",
+  "Comando de inicializacao": "Startup command",
+  "Como voce participa": "How you participate",
+  "Config": "Settings",
+  "Confirmar acao": "Confirm action",
+  "Configuracoes": "Settings",
+  "Configuracoes avancadas do llama.cpp": "Advanced llama.cpp settings",
+  "Configuracoes avancadas do modelo": "Advanced model settings",
+  "Configurações avançadas do modelo": "Advanced model settings",
+  "Configuracoes do estilo": "Style settings",
+  "Configuracoes gerais": "General settings",
+  "Configuracoes locais": "Local settings",
+  "Configurada - deixe em branco para manter": "Configured - leave blank to keep",
+  "Continuar": "Continue",
+  "Criacao rapida": "Quick creation",
+  "Criar": "Create",
+  "Criar Cenario": "Create Scenario",
+  "Criar e jogar": "Create and play",
+  "Criar historia": "Create story",
+  "Criar prompt de imagem": "Create image prompt",
+  "Crie, continue e organize visual novels geradas localmente.": "Create, continue, and organize locally generated visual novels.",
+  "Cronicas de Elaria": "Chronicles of Elaria",
+  "Dashboard": "Dashboard",
+  "Defina conexoes com IA de texto e ComfyUI para geracao de texto e imagens.": "Configure text AI and ComfyUI connections for text and image generation.",
+  "Defina como sprites e cenarios serao gerados em cada historia.": "Define how sprites and backgrounds are generated for each story.",
+  "Deletar": "Delete",
+  "Deletar Personagem": "Delete Character",
+  "Detalhes": "Details",
+  "Detalhes da historia": "Story details",
+  "Diagnostico": "Diagnostics",
+  "Distante": "Distant",
+  "Duplicar": "Duplicate",
+  "Editar": "Edit",
+  "Editar estilo": "Edit style",
+  "Editar prompt": "Edit prompt",
+  "Elenco": "Cast",
+  "Elenco inicial": "Initial cast",
+  "English": "English",
+  "Escolha como voce participa antes da IA gerar a base da historia.": "Choose how you participate before the AI generates the story foundation.",
+  "Escolher imagem": "Choose image",
+  "Escolhas": "Choices",
+  "Esconder menu superior": "Hide top menu",
+  "Escreva uma acao, fala ou direcao para a IA. Use [[ordem direta]] para instrucoes explicitas, ex.: [[Nao troque de cenario]]": "Write an action, line, or direction for the AI. Use [[direct order]] for explicit instructions, e.g.: [[Do not change the scenario]]",
+  "Escreva poucas palavras, escolha como voce participa e entao deixe a IA montar a base editavel.": "Write a few words, choose how you participate, then let the AI build the editable foundation.",
+  "Estilo final": "Final style",
+  "Estilo sem nome": "Unnamed style",
+  "Estilos": "Styles",
+  "Estilos visuais": "Visual styles",
+  "Excluir": "Delete",
+  "Excluir preset custom": "Delete custom preset",
+  "Express\u00f5es": "Expressions",
+  "Fechar": "Close",
+  "Ficha do Personagem": "Character Sheet",
+  "Filtro de Opacidade do Cenario": "Background Opacity Filter",
+  "Gerar base e avancar": "Generate foundation and continue",
+  "Gerar sprite": "Generate sprite",
+  "Genero": "Genre",
+  "Gerar cenario no ComfyUI": "Generate background in ComfyUI",
+  "Historia": "Story",
+  "Historia sem titulo": "Untitled story",
+  "Historias": "Stories",
+  "Historias locais": "Local stories",
+  "Historias neste dispositivo": "Stories on this device",
+  "Historico": "History",
+  "IA de geracao de historia": "Story-generation AI",
+  "IA de narrativa": "Narrative AI",
+  "Ideia inicial": "Initial idea",
+  "Idioma": "Language",
+  "Idioma padrao de geracao": "Default generation language",
+  "Informacoes da cena atual": "Current scene information",
+  "Incluir personagem na cena": "Add character to scene",
+  "Inicializar com o TaleWeaver": "Start with TaleWeaver",
+  "Inicio": "Home",
+  "Janela de contexto do servidor": "Server context window",
+  "Jogue sua propria historia": "Play your own story",
+  "Local inicial": "Starting location",
+  "Local neste dispositivo": "Local on this device",
+  "Lore e memoria": "Lore and memory",
+  "Lore e mundo": "Lore and world",
+  "Mensagem inicial": "Opening message",
+  "Menu principal": "Main menu",
+  "Modelos Ollama detectados": "Detected Ollama models",
+  "Modelo": "Model",
+  "Modelo de texto": "Text model",
+  "Modo de Edicao": "Edit Mode",
+  "Linguagem do sistema": "System language",
+  "Local inicial": "Starting location",
+  "Local neste dispositivo": "Local on this device",
+  "Logs de API": "API Logs",
+  "Mais cenas": "Most scenes",
+  "Melhorar": "Improve",
+  "Melhorar com IA": "Improve with AI",
+  "Mensagem inicial": "Opening message",
+  "Mostrar comandos de geracao de prompt": "Show prompt-generation commands",
+  "Mostrar execucao do app": "Show app execution",
+  "Mostrar menu superior": "Show top menu",
+  "Narrador": "Narrator",
+  "Narra\u00e7\u00e3o": "Narration",
+  "Nenhum campo avancado detectado para este workflow.": "No advanced fields detected for this workflow.",
+  "Nenhum estilo criado.": "No styles created.",
+  "Nenhum log registrado ainda.": "No logs recorded yet.",
+  "Nenhum personagem cadastrado.": "No characters registered.",
+  "Nenhum personagem marcado como visivel nesta cena.": "No character is marked visible in this scene.",
+  "Nova historia": "New story",
+  "Nome": "Name",
+  "Nome da historia": "Story name",
+  "Nome do estilo": "Style name",
+  "Nome para preset custom": "Custom preset name",
+  "Novo estilo": "New style",
+  "Ordenar": "Sort",
+  "Papel": "Role",
+  "Papel na historia": "Role in the story",
+  "Opcoes principais": "Main options",
+  "Opcoes de Refazer": "Redo options",
+  "Painel": "Panel",
+  "Parar app": "Stop app",
+  "Participacao": "Participation",
+  "Personagens": "Characters",
+  "Personagens em cena": "Characters in scene",
+  "Pasta de execucao": "Execution folder",
+  "Pasta de workbenches": "Workbenches folder",
+  "Pasta do ComfyUI": "ComfyUI folder",
+  "Pedir diagnostico detalhado de timings": "Request detailed timing diagnostics",
+  "Portugues (BR)": "Portuguese (BR)",
+  "Proxima fala": "Next line",
+  "Proximo": "Next",
+  "Prompt de background": "Background prompt",
+  "Primeira situacao que deve abrir a historia.": "First situation that should open the story.",
+  "Prompt negativo de cenario": "Negative background prompt",
+  "Prompt negativo de sprite": "Negative sprite prompt",
+  "Recarregar": "Reload",
+  "Recentes": "Recent",
+  "Referencias": "References",
+  "Regerar": "Regenerate",
+  "Regerar Cenario": "Regenerate Scenario",
+  "Regerar aparencia": "Regenerate appearance",
+  "Regerar cena": "Regenerate scene",
+  "Regerar cena com novo input": "Regenerate scene with new input",
+  "Regerar cenario": "Regenerate background",
+  "Regenerar": "Regenerate",
+  "Regenerar cenario": "Regenerate background",
+  "Regenerar Sprite": "Regenerate Sprite",
+  "Regenerar aparencia": "Regenerate appearance",
+  "Regenerar com IA": "Regenerate with AI",
+  "Regenerando...": "Regenerating...",
+  "Registrar": "Register",
+  "Registrar memoria": "Register Memory",
+  "Remover": "Remove",
+  "Remover personagem da cena": "Remove character from scene",
+  "Renomear referencia": "Rename reference",
+  "Repeat last N": "Repeat last N",
+  "Repeat penalty": "Repeat penalty",
+  "Resultado": "Result",
+  "Restaurar": "Restore",
+  "Reutilizar cache de prompt do llama.cpp": "Reuse llama.cpp prompt cache",
+  "Salvar cena": "Save scene",
+  "Salvar como preset": "Save as preset",
+  "Salvar configuracoes": "Save settings",
+  "Salvar estilo": "Save style",
+  "Salvar prompt": "Save prompt",
+  "Salvar nome": "Save name",
+  "Sair": "Exit",
+  "Scripts": "Scripts",
+  "Selecionar": "Select",
+  "Selecionar aparencia": "Select appearance",
+  "Sem dialogos nesta cena.": "No dialogue in this scene.",
+  "Sistema": "System",
+  "Sprite largura": "Sprite width",
+  "Sprites": "Sprites",
+  "Testar ComfyUI": "Test ComfyUI",
+  "Tecendo mundos, personagens e historias com IA.": "Weaving worlds, characters, and stories with AI.",
+  "Tentativas maximas": "Maximum attempts",
+  "Temperatura": "Temperature",
+  "Titulo": "Title",
+  "Titulo da cena": "Scene title",
+  "Todos os personagens ja estao em cena": "All characters are already in the scene",
+  "Tokens da cena": "Scene tokens",
+  "Tokens da resposta": "Response tokens",
+  "Tokens em retry": "Retry tokens",
+  "Tom": "Tone",
+  "Tornar cenario ativo": "Set active scenario",
+  "Timeout da chamada (s)": "Request timeout (s)",
+  "URL do ComfyUI": "ComfyUI URL",
+  "URL do Ollama": "Ollama URL",
+  "Usar como sprite ativo": "Use as active sprite",
+  "Usar default do workbench": "Use workbench default",
+  "Usar parametros llama.cpp nesta API": "Use llama.cpp parameters with this API",
+  "Verificar certificado SSL": "Verify SSL certificate",
+  "Vestimenta": "Clothing",
+  "Visual": "Visual",
+  "Visualizar": "Preview",
+  "Visualizar referencia": "Preview reference",
+  "Visualizar sprite": "Preview sprite",
+  "Voltar": "Back",
+  "Workbenches detectados": "Detected workbenches",
+  "Workflow de Alterar Aparencia": "Appearance-change workflow",
+  "Workflow de Alterar Aparencia Com Referencia": "Appearance-change workflow with reference",
+  "Workflow de Alterar Expressoes": "Expression-change workflow",
+  "Workflow simples interno": "Simple internal workflow",
+  "sem estilo": "no style",
+  "sem genero": "no genre",
+  "sem papel definido": "no defined role",
+  "anime visual novel": "anime visual novel",
+  "aprendiz exilado": "exiled apprentice",
+  "biblioteca sob chuva": "library under rain",
+  "dramatico, melancolico": "dramatic, melancholic",
+  "fantasia, misterio": "fantasy, mystery",
+  "definida pelo usuario": "user-defined",
+  "rapido_custom": "fast_custom",
+  "llama_rapido_custom": "llama_fast_custom",
+  "Descreva nome, papel, personalidade, aparencia ou qualquer detalhe importante.": "Describe name, role, personality, appearance, or any important detail.",
+  "Descreva o conflito, o tipo de protagonista e o clima da historia.": "Describe the conflict, protagonist type, and story mood.",
+  "Ex.: um deus recem desperto precisa guiar uma tribo antiga sem revelar sua verdadeira origem": "E.g.: a newly awakened god must guide an ancient tribe without revealing their true origin",
+  "Ex.: Luna prometeu nunca abrir a porta vermelha.": "E.g.: Luna promised never to open the red door.",
+  "Regras do mundo, conflitos, faccoes, cidades, magia, tecnologia...": "World rules, conflicts, factions, cities, magic, technology...",
+  "A janela de contexto deve bater com o llama-server. Com 4096, o app usa prompt narrativo compacto automaticamente. Para usar prompt completo, inicie o servidor com 8192 ou mais e salve esse valor aqui.": "The context window must match llama-server. At 4096, the app automatically uses a compact narrative prompt. To use the full prompt, start the server with 8192 or more and save that value here.",
+  "Ao gerar historia inicial, o TaleWeaver ativa a IA de geracao de historia e pausa a IA de narrativa quando elas usam runtimes diferentes. Durante a narrativa, a IA permanece ativa entre chamadas. Durante imagens, a IA de narrativa e pausada ate o ComfyUI terminar.": "When generating the initial story, TaleWeaver activates the story-generation AI and pauses the narrative AI when they use different runtimes. During narration, the AI stays active between calls. During image generation, the narrative AI is paused until ComfyUI finishes.",
+  "Menos contexto e resposta mais curta. Bom para testar cenas e modelos pesados.": "Less context and shorter output. Good for testing scenes and heavy models.",
+  "Boa qualidade com custo controlado. Recomendado para qwen3:14b.": "Good quality with controlled cost. Recommended for qwen3:14b.",
+  "Mais contexto, respostas longas e uma tentativa extra. Melhor para cenas importantes.": "More context, longer responses, and one extra attempt. Better for important scenes.",
+  "Menos tokens e cache de prompt ligado. Bom para testar cenas com llama.cpp local.": "Fewer tokens and prompt cache enabled. Good for testing scenes with local llama.cpp.",
+  "Boa qualidade com custo controlado para llama-server em maquina local.": "Good quality with controlled cost for a local llama-server.",
+  "Mais tokens e uma tentativa extra. Melhor para cenas importantes ou modelos menores.": "More tokens and one extra attempt. Better for important scenes or smaller models.",
+  "Ainda nao existem referencias nesta historia. Use Adicionar para carregar a primeira imagem.": "There are no references in this story yet. Use Add to load the first image.",
+  "A imagem sera copiada para a pasta do projeto.": "The image will be copied into the project folder.",
+  "Alta": "High",
+  "Alterar prompt de geracao": "Change generation prompt",
+  "Aplicar preset": "Apply preset",
+  "Ativo": "Active",
+  "Aliases": "Aliases",
+  "Baixa": "Low",
+  "Checkpoint padrao": "Default checkpoint",
+  "ComfyUI Workflow": "ComfyUI Workflow",
+  "ComfyUI Workflow de cenario": "Background ComfyUI Workflow",
+  "Configuracoes Avancadas de Personagem": "Advanced Character Settings",
+  "Configurar historia": "Configure story",
+  "Continuar Historia": "Continue Story",
+  "Configure o Workflow de Alterar Aparencia Com Referencia no estilo atual antes de gerar.": "Configure the Appearance Change With Reference workflow in the current style before generating.",
+  "Configure o Workflow de Alterar Aparencia Com Referencia no estilo atual antes de regenerar.": "Configure the Appearance Change With Reference workflow in the current style before regenerating.",
+  "Configure o Workflow de Alterar Aparencia no estilo atual antes de gerar.": "Configure the Appearance Change workflow in the current style before generating.",
+  "Configure o Workflow de Alterar Aparencia no estilo atual antes de regenerar.": "Configure the Appearance Change workflow in the current style before regenerating.",
+  "Conteudo": "Content",
+  "Contexto maximo": "Maximum context",
+  "Contexto principal": "Main context",
+  "Crie um estilo no menu Estilos antes de finalizar a historia.": "Create a style in the Styles menu before finishing the story.",
+  "Deletar o cenario \"{}\"? O historico de dialogos e cenas sera preservado.": "Delete scenario \"{}\"? Dialogue and scene history will be preserved.",
+  "Descricao do Cenario": "Scenario Description",
+  "Descricao": "Description",
+  "Descricao narrativa": "Narrative description",
+  "Descreva o personagem": "Describe the character",
+  "Designer de Aparencias": "Appearance Designer",
+  "Design de Aparencias": "Appearance Design",
+  "Duas Referencias": "Two References",
+  "Editar memoria": "Edit memory",
+  "Editar personagem": "Edit character",
+  "Especie": "Species",
+  "Entradas de lore": "Lore entries",
+  "Expandir": "Expand",
+  "Escrever prompt manualmente": "Write prompt manually",
+  "Essa escolha define como a IA cria o protagonista, as escolhas e os sprites antes de gerar a base da historia.": "This choice defines how the AI creates the protagonist, choices, and sprites before generating the story foundation.",
+  "Esta acao substituira a aparencia selecionada. A imagem anterior sera perdida. Deseja continuar?": "This will replace the selected appearance. The previous image will be lost. Continue?",
+  "Este personagem nao usa sprite neste modo.": "This character does not use a sprite in this mode.",
+  "Estilo visual": "Visual style",
+  "Excluir \"{}\"?": "Delete \"{}\"?",
+  "Excluir \"{}\"? Esta acao remove cenas, personagens, memoria e assets salvos.": "Delete \"{}\"? This removes saved scenes, characters, memory, and assets.",
+  "Excluir a referencia \"{}\"?": "Delete reference \"{}\"?",
+  "Excluir esta memoria?": "Delete this memory?",
+  "Excluir o estilo \"{}\"? Historias existentes manterao apenas o nome do estilo.": "Delete style \"{}\"? Existing stories will keep only the style name.",
+  "Excluir o sprite atual de {} e gerar um novo?": "Delete the current sprite for {} and generate a new one?",
+  "Faccao": "Faction",
+  "Fato": "Fact",
+  "Gerar": "Generate",
+  "Gerando...": "Generating...",
+  "Gerar prompt": "Generate prompt",
+  "Gere uma cena antes de editar.": "Generate a scene before editing.",
+  "Imagem ainda nao disponivel.": "Image not available yet.",
+  "Ilustrar": "Depict",
+  "Importancia": "Importance",
+  "Local": "Location",
+  "Lore base": "Base lore",
+  "Melhorar prompt": "Improve prompt",
+  "Melhorar prompt antes de enviar": "Improve prompt before sending",
+  "Memoria": "Memory",
+  "Mundo": "World",
+  "Nao": "No",
+  "Nenhum cenario foi criado ainda.": "No scenario has been created yet.",
+  "Nenhum personagem visual disponivel.": "No visual character available.",
+  "Nenhum sprite gerado ainda.": "No sprite generated yet.",
+  "Nenhuma aparencia gerada ainda.": "No appearance generated yet.",
+  "Nenhuma cena ainda.": "No scenes yet.",
+  "Nenhuma cena ativa.": "No active scene.",
+  "Nenhuma entrada de lore registrada.": "No lore entries recorded.",
+  "Nenhuma historia criada ainda.": "No story created yet.",
+  "Nenhuma imagem valida para preview.": "No valid image for preview.",
+  "Nenhuma memoria registrada.": "No memory recorded.",
+  "Nenhuma referencia selecionada": "No reference selected",
+  "Nome do Cenario": "Scenario Name",
+  "Normal": "Normal",
+  "Nota": "Note",
+  "OK": "OK",
+  "Novo comando": "New command",
+  "Novo prompt": "New prompt",
+  "O que mudar": "What to change",
+  "Objetivo": "Goal",
+  "Parar o servidor local do app?": "Stop the local app server?",
+  "Personalidade": "Personality",
+  "Portugues (pt-BR)": "Portuguese (pt-BR)",
+  "Preset de performance": "Performance preset",
+  "Preset de performance llama.cpp": "llama.cpp performance preset",
+  "Preview somente leitura do texto enviado no ACTIVE CHARACTER BRIEF.": "Read-only preview of the text sent in ACTIVE CHARACTER BRIEF.",
+  "Prompt do cenario": "Background prompt",
+  "Prompt do usuario": "User prompt",
+  "Prompt manual": "Manual prompt",
+  "Prompt para Geracao de Imagem": "Image Generation Prompt",
+  "Prefixo do prompt de cenario": "Background prompt prefix",
+  "Prefixo do prompt de sprite": "Sprite prompt prefix",
+  "Referencia": "Reference",
+  "Referencia nao encontrada": "Reference not found",
+  "Refazer": "Redo",
+  "Requisicao": "Request",
+  "Resposta": "Response",
+  "Recolher": "Collapse",
+  "Relacao": "Relationship",
+  "Relacao com a cena/protagonista": "Relationship with the scene/protagonist",
+  "Resumo": "Summary",
+  "Resumo curto da personalidade pratica que a IA deve usar ao escrever o personagem.": "Short summary of the practical personality the AI should use when writing the character.",
+  "Resumo curto de como o personagem fala, seu tom, ritmo, vocabulario e estilo.": "Short summary of how the character speaks, including tone, rhythm, vocabulary, and style.",
+  "Resumo curto de quem esse personagem e na historia ou na cena.": "Short summary of who this character is in the story or scene.",
+  "Resumo da Funcao Narrativa": "Narrative Role Summary",
+  "Resumo de Personalidade": "Personality Summary",
+  "Resumo do Modo de Fala": "Voice Summary",
+  "Resumo Final Enviado para a IA": "Final Summary Sent to the AI",
+  "Salvar": "Save",
+  "Salvar lore": "Save lore",
+  "Salvar memoria": "Save memory",
+  "Salvar personagem": "Save character",
+  "Sair da Cena": "Leave Scene",
+  "Selecionar sprite de referencia": "Select reference sprite",
+  "Sem alteracao manual, sera reutilizado o prompt salvo do cenario.": "Without a manual change, the saved scenario prompt will be reused.",
+  "Sem imagem": "No image",
+  "Sim": "Yes",
+  "Sufixo do prompt de cenario": "Background prompt suffix",
+  "Sufixo do prompt de sprite": "Sprite prompt suffix",
+  "sprite pendente": "pending sprite",
+  "Sprites de Aparencias": "Appearance Sprites",
+  "Tipo": "Type",
+  "Uma Referencia": "One Reference",
+  "Regenerar {}? As imagens atuais serao substituidas nesta aparencia.": "Regenerate {}? The current images in this appearance will be replaced.",
+  "Registrar informacao": "Register information",
+  "Regra": "Rule",
+  "Algumas expressoes falharam:\\n{}": "Some expressions failed:\\n{}",
+  "ComfyUI online. GPU: {}": "ComfyUI online. GPU: {}",
+  "ComfyUI nao respondeu: {}": "ComfyUI did not respond: {}",
+  "Personagem {} criado, mas sem prompt de imagem.": "Character {} was created, but without an image prompt.",
+  "A referencia \"{}\" ja existe.": "Reference \"{}\" already exists.",
+  "Preset customizado salvo localmente.": "Custom preset saved locally.",
+};
+
+let normalizedEnglishTranslations = null;
 
 const spriteAlphaMaskCache = new Map();
 const SPRITE_ALPHA_HIT_THRESHOLD = 8;
@@ -382,6 +806,152 @@ async function api(path, options = {}) {
   return data;
 }
 
+function currentSystemLanguage(settings = state.settings) {
+  const value = String(settings?.system_language || "pt-BR").trim();
+  return value === "en" ? "en" : "pt-BR";
+}
+
+function t(key, vars = {}) {
+  const language = currentSystemLanguage();
+  const source = UI_COPY[language]?.[key] ?? UI_COPY["pt-BR"]?.[key] ?? key;
+  return Object.entries(vars).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value ?? "")), source);
+}
+
+function normalizeUiText(value) {
+  return repairMojibakeText(String(value || ""))
+    .replace(/\u00a0/g, " ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function repairMojibakeText(value) {
+  const replacements = [
+    ["Ã§", "ç"], ["Ã‡", "Ç"],
+    ["Ã£", "ã"], ["Ãµ", "õ"], ["Ã¡", "á"], ["Ã©", "é"], ["Ãª", "ê"],
+    ["Ã­", "í"], ["Ã³", "ó"], ["Ãº", "ú"], ["Ã¢", "â"], ["Ã´", "ô"],
+    ["Ã ", "à"], ["Â·", "·"],
+  ];
+  return replacements.reduce((text, [from, to]) => text.replaceAll(from, to), value);
+}
+
+function englishTranslationMap() {
+  if (!normalizedEnglishTranslations) {
+    normalizedEnglishTranslations = Object.entries(UI_TRANSLATIONS_EN).reduce((acc, [key, value]) => {
+      const normalized = normalizeUiText(key);
+      acc[normalized] = value;
+      acc[normalized.toLowerCase()] = value;
+      return acc;
+    }, {});
+  }
+  return normalizedEnglishTranslations;
+}
+
+function translateSystemString(value) {
+  if (currentSystemLanguage() !== "en") return value;
+  const original = String(value ?? "");
+  const normalized = normalizeUiText(original);
+  if (!normalized) return value;
+  const translations = englishTranslationMap();
+  if (translations[normalized]) return translations[normalized];
+  if (translations[normalized.toLowerCase()]) return translations[normalized.toLowerCase()];
+  const sceneMatch = normalized.match(/^Cena\s+(\d+):\s*(.*)$/i);
+  if (sceneMatch) return `Scene ${sceneMatch[1]}:${sceneMatch[2] ? ` ${sceneMatch[2]}` : ""}`;
+  const characterCountMatch = normalized.match(/^(\d+)\s+personagem\(ns\)$/i);
+  if (characterCountMatch) return `${characterCountMatch[1]} character(s)`;
+  const sceneCountMatch = normalized.match(/^(\d+)\s+cenas$/i);
+  if (sceneCountMatch) return `${sceneCountMatch[1]} scenes`;
+  const minCharactersMatch = normalized.match(/^(\d+)\/(\d+)\s+caracteres minimos$/i);
+  if (minCharactersMatch) return `${minCharactersMatch[1]}/${minCharactersMatch[2]} minimum characters`;
+  const nextLineMatch = normalized.match(/^Proxima fala:\s*(.*)$/i);
+  if (nextLineMatch) return `Next line: ${nextLineMatch[1]}`;
+  if (normalized.startsWith("Ouvir ") && normalized.endsWith(" agora")) {
+    return `Hear ${normalized.slice(6, -6)} now`;
+  }
+  const detectedOllamaMatch = normalized.match(/^Modelos Ollama detectados:\s*(.*)$/i);
+  if (detectedOllamaMatch) {
+    const detail = detectedOllamaMatch[1] || "";
+    const translatedDetail = detail === "nenhum, verifique se o Ollama esta aberto."
+      ? "none, check whether Ollama is open."
+      : detail;
+    return `Detected Ollama models: ${translatedDetail}`;
+  }
+  const providerMatch = normalized.match(/^Provider ativo:\s*(.*?)\.\s*Modelo:\s*(.*?)\.\s*Base URL:\s*(.*?)\.$/i);
+  if (providerMatch) {
+    const model = providerMatch[2] === "nao configurado" ? "not configured" : providerMatch[2];
+    const baseUrl = providerMatch[3] === "nao configurada" ? "not configured" : providerMatch[3];
+    return `Active provider: ${providerMatch[1]}. Model: ${model}. Base URL: ${baseUrl}.`;
+  }
+  const checkpointsMatch = normalized.match(/^Checkpoints detectados:\s*(.*)$/i);
+  if (checkpointsMatch) {
+    const detail = checkpointsMatch[1] === "nenhum, verifique se o ComfyUI esta aberto."
+      ? "none, check whether ComfyUI is open."
+      : checkpointsMatch[1];
+    return `Detected checkpoints: ${detail}`;
+  }
+  const workbenchesMatch = normalized.match(/^Workbenches detectados:\s*(.*)$/i);
+  if (workbenchesMatch) {
+    const detail = workbenchesMatch[1]
+      .replaceAll("nenhum JSON encontrado na pasta de workbenches.", "no JSON files found in the workbenches folder.")
+      .replaceAll("pronto", "ready")
+      .replaceAll("nao executavel", "not executable");
+    return `Detected workbenches: ${detail}`;
+  }
+  const statusPrefixes = [
+    ["Gerando ", "Generating "],
+    ["Regerando ", "Regenerating "],
+    ["Enviando ", "Sending "],
+    ["Salvando ", "Saving "],
+    ["Criando ", "Creating "],
+    ["Deletando ", "Deleting "],
+    ["Excluindo ", "Deleting "],
+    ["Selecionando ", "Selecting "],
+    ["Preparando ", "Preparing "],
+    ["Ativando ", "Activating "],
+  ];
+  for (const [source, target] of statusPrefixes) {
+    if (normalized.startsWith(source)) return `${target}${normalized.slice(source.length)}`;
+  }
+  return value;
+}
+
+function shouldSkipUiTranslation(node) {
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return Boolean(element?.closest("textarea, input, pre, code, .active-dialogue-text, .scene-text, .story-description, .log-entry pre"));
+}
+
+function applySystemLanguage() {
+  const language = currentSystemLanguage();
+  document.documentElement.lang = language === "en" ? "en" : "pt-BR";
+  if (language !== "en" || !app) return;
+  translateRenderedSystemText(app);
+}
+
+function translateRenderedSystemText(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim() || shouldSkipUiTranslation(node)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(node => {
+    const value = node.nodeValue;
+    const translated = translateSystemString(value);
+    if (translated !== value) node.nodeValue = value.replace(value.trim(), translated);
+  });
+  root.querySelectorAll("[placeholder], [title], [aria-label]").forEach(element => {
+    ["placeholder", "title", "aria-label"].forEach(attribute => {
+      if (!element.hasAttribute(attribute)) return;
+      const current = element.getAttribute(attribute) || "";
+      const translated = translateSystemString(current);
+      if (translated !== current) element.setAttribute(attribute, translated);
+    });
+  });
+}
+
 async function loadStories() {
   const data = await api("/api/stories");
   state.stories = data.stories || [];
@@ -398,6 +968,7 @@ async function loadStory(id) {
 
 async function loadSettings() {
   state.settings = await api("/api/settings");
+  applySystemLanguage();
   try {
     const data = await api("/api/ollama/models");
     state.ollamaModels = (data.models || []).map(model => model.name || model.model).filter(Boolean);
@@ -434,9 +1005,11 @@ function setBusy(value, status = "") {
 }
 
 function render() {
+  const isHome = state.route === "home";
   app.innerHTML = `
-    <div class="app-shell">
-      ${renderTopnav()}
+    <div class="app-shell ${isHome ? "home-shell" : ""}">
+      ${isHome ? "" : renderTopnav()}
+      ${isHome ? renderHome() : ""}
       ${state.route === "dashboard" ? renderDashboard() : ""}
       ${state.route === "create" ? renderCreateStory() : ""}
       ${state.route === "styles" ? renderVisualStyles() : ""}
@@ -445,12 +1018,90 @@ function render() {
       ${state.route === "play" ? renderPlay() : ""}
       ${state.drawer ? renderDrawer() : ""}
       ${state.modal ? renderModal() : ""}
-      ${state.busy ? `<div class="status">${escapeHtml(state.status || "Processando...")}</div>` : ""}
+      ${state.messageDialog ? renderMessageDialog() : ""}
+      ${state.busy ? `<div class="status">${escapeHtml(state.status || t("status.processing"))}</div>` : ""}
     </div>
   `;
+  applySystemLanguage();
   bindEvents();
   runPostRenderEffects();
 }
+
+function renderMessageDialog() {
+  const dialog = state.messageDialog || {};
+  const confirmMode = dialog.type === "confirm";
+  return `
+    <div class="modal-backdrop app-message-backdrop">
+      <section class="modal app-message-modal ${escapeAttr(dialog.variant || "info")}" role="dialog" aria-modal="true" aria-label="${escapeAttr(dialog.title || "Mensagem")}">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">${escapeHtml(dialog.kicker || "TaleWeaver")}</span>
+            <h2>${escapeHtml(dialog.title || (confirmMode ? "Confirmar acao" : "Aviso"))}</h2>
+          </div>
+          <button type="button" class="icon-close" data-action="message-dialog-cancel" aria-label="Fechar">X</button>
+        </div>
+        <p class="app-message-text">${escapeHtml(dialog.message || "")}</p>
+        <div class="mini-actions">
+          ${confirmMode ? `<button type="button" data-action="message-dialog-cancel">${escapeHtml(dialog.cancelLabel || "Cancelar")}</button>` : ""}
+          <button type="button" class="primary" data-action="message-dialog-confirm">${escapeHtml(dialog.confirmLabel || "OK")}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function showAppMessageDialog(options = {}) {
+  if (pendingMessageDialogResolve) {
+    pendingMessageDialogResolve(false);
+    pendingMessageDialogResolve = null;
+  }
+  state.messageDialog = {
+    type: options.type || "alert",
+    variant: options.variant || "info",
+    title: options.title || "",
+    message: String(options.message || ""),
+    confirmLabel: options.confirmLabel || "OK",
+    cancelLabel: options.cancelLabel || "Cancelar",
+    kicker: options.kicker || "TaleWeaver",
+  };
+  render();
+  return new Promise(resolve => {
+    pendingMessageDialogResolve = resolve;
+  });
+}
+
+function resolveMessageDialog(value) {
+  const resolve = pendingMessageDialogResolve;
+  pendingMessageDialogResolve = null;
+  state.messageDialog = null;
+  render();
+  if (resolve) resolve(Boolean(value));
+}
+
+async function appAlert(message, options = {}) {
+  await showAppMessageDialog({
+    type: "alert",
+    title: options.title || "Aviso",
+    variant: options.variant || "info",
+    message,
+    confirmLabel: options.confirmLabel || "OK",
+  });
+}
+
+function appConfirm(message, options = {}) {
+  return showAppMessageDialog({
+    type: "confirm",
+    title: options.title || "Confirmar acao",
+    variant: options.variant || "warning",
+    message,
+    confirmLabel: options.confirmLabel || "Sim",
+    cancelLabel: options.cancelLabel || "Cancelar",
+  });
+}
+
+window.alert = message => {
+  void appAlert(message);
+};
 
 function renderTopnav() {
   const playMode = state.route === "play";
@@ -463,6 +1114,7 @@ function renderTopnav() {
           <span>Biblioteca local de visual novels geradas por IA</span>
         </div>
         <nav class="nav-actions">
+          <button data-action="home">Início</button>
           <button data-action="dashboard">Histórias</button>
           <button data-action="styles">Estilos</button>
           <button data-action="settings">Config</button>
@@ -485,6 +1137,47 @@ function renderTopnav() {
   `;
 }
 
+function renderHome() {
+  const latestStory = sortedStories()[0] || null;
+  return `
+    <main class="home-screen" aria-label="Menu principal">
+      <div class="home-bg-grid" aria-hidden="true"></div>
+      <div class="home-bg-runes" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <section class="home-menu-panel">
+        <div class="home-logo-wrap">
+          <img class="home-logo" src="/assets/logo.png" alt="TaleWeaver">
+        </div>
+        <p class="home-tagline">Tecendo mundos, personagens e histórias com IA.</p>
+        <nav class="home-menu-actions" aria-label="Opções principais">
+          <button
+            type="button"
+            class="home-menu-button home-continue-button"
+            data-action="continue-latest-story"
+            ${latestStory ? "" : "disabled"}
+          >
+            <span>Continuar Historia</span>
+          </button>
+          <button type="button" class="home-menu-button" data-action="dashboard">
+            <span>Histórias</span>
+          </button>
+          <button type="button" class="home-menu-button" data-action="styles">
+            <span>Estilos</span>
+          </button>
+          <button type="button" class="home-menu-button" data-action="settings">
+            <span>Configurações</span>
+          </button>
+        </nav>
+      </section>
+      <footer class="home-footer">
+        <span>TaleWeaver</span>
+        <span>v1.0</span>
+      </footer>
+    </main>
+  `;
+}
+
 function renderSettings() {
   const settings = state.settings || {};
   const provider = settings.ai_provider || "ollama";
@@ -501,6 +1194,14 @@ function renderSettings() {
           <h2>Configuracoes gerais</h2>
           <div class="form-grid">
             <input type="hidden" name="ai_provider" value="${escapeAttr(provider)}">
+            <div class="field">
+              <label for="system_language">${t("settings.system_language")}</label>
+              <select id="system_language" name="system_language">
+                ${SYSTEM_LANGUAGE_OPTIONS.map(option => `
+                  <option value="${escapeAttr(option.value)}" ${(settings.system_language || "pt-BR") === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+                `).join("")}
+              </select>
+            </div>
             <div class="field">
               <label for="default_language">Idioma padrao de geracao</label>
               <select id="default_language" name="default_language">
@@ -561,19 +1262,10 @@ function renderScriptSettings(settings) {
       <div class="script-service">
         <h3>IA de narrativa</h3>
         <div class="form-grid">
-          ${valueField("script_scene_ai_cwd", "Pasta de execucao", settings.script_scene_ai_cwd || settings.script_llama_cwd || "")}
-          ${valueField("script_scene_ai_command", "Comando de inicializacao", settings.script_scene_ai_command || settings.script_llama_command || "")}
-          ${checkboxField("script_scene_ai_start_with_app", "Inicializar com o TaleWeaver", settings.script_scene_ai_start_with_app === true || settings.script_llama_start_with_app === true)}
-          ${checkboxField("script_scene_ai_show_window", "Mostrar execucao do app", settings.script_scene_ai_show_window !== false && settings.script_llama_show_window !== false)}
-        </div>
-      </div>
-      <div class="script-service">
-        <h3>Llama legado</h3>
-        <div class="form-grid">
-          ${valueField("script_llama_cwd", "Pasta de execucao", settings.script_llama_cwd || "")}
-          ${valueField("script_llama_command", "Comando de inicializacao", settings.script_llama_command || "")}
-          ${checkboxField("script_llama_start_with_app", "Inicializar com o TaleWeaver", settings.script_llama_start_with_app === true)}
-          ${checkboxField("script_llama_show_window", "Mostrar execucao do app", settings.script_llama_show_window !== false)}
+          ${valueField("script_scene_ai_cwd", "Pasta de execucao", settings.script_scene_ai_cwd || "")}
+          ${valueField("script_scene_ai_command", "Comando de inicializacao", settings.script_scene_ai_command || "")}
+          ${checkboxField("script_scene_ai_start_with_app", "Inicializar com o TaleWeaver", settings.script_scene_ai_start_with_app === true)}
+          ${checkboxField("script_scene_ai_show_window", "Mostrar execucao do app", settings.script_scene_ai_show_window !== false)}
         </div>
       </div>
       <div class="script-service">
@@ -585,7 +1277,7 @@ function renderScriptSettings(settings) {
           ${checkboxField("script_comfy_show_window", "Mostrar execucao do app", settings.script_comfy_show_window !== false)}
         </div>
       </div>
-      <div class="notice">Ao gerar historia inicial, o TaleWeaver ativa a IA de geracao de historia e pausa a IA de narrativa quando elas usam runtimes diferentes. Durante a narrativa, a IA permanece ativa entre chamadas. Durante imagens, a IA de narrativa/Llama e pausada ate o ComfyUI terminar.</div>
+      <div class="notice">Ao gerar historia inicial, o TaleWeaver ativa a IA de geracao de historia e pausa a IA de narrativa quando elas usam runtimes diferentes. Durante a narrativa, a IA permanece ativa entre chamadas. Durante imagens, a IA de narrativa e pausada ate o ComfyUI terminar.</div>
     </section>
   `;
 }
@@ -647,20 +1339,20 @@ function renderRoleLlamaSettings(settings, prefix) {
 function renderVisualStyles() {
   const draft = currentStyleDraft();
   return `
-    <main class="page">
-      <section class="view-title">
+    <main class="page tw-page styles-page">
+      <section class="view-title styles-hero">
         <div>
           <h1>Estilos visuais</h1>
           <p>Defina como sprites e cenarios serao gerados em cada historia.</p>
         </div>
-        <button class="primary" data-action="new-style">Novo estilo</button>
+        <button class="primary tw-button-primary" data-action="new-style">Novo estilo</button>
       </section>
       <section class="style-manager">
-        <div class="panel style-list-panel">
+        <div class="panel tw-panel style-list-panel">
           <h2>Estilos</h2>
           <div class="style-list">
             ${state.visualStyles.length ? state.visualStyles.map(style => `
-              <button type="button" class="style-list-item ${style.id === state.styleEditingId ? "active" : ""}" data-action="edit-style" data-id="${escapeAttr(style.id)}">
+              <button type="button" class="style-list-item tw-card ${style.id === state.styleEditingId ? "active" : ""}" data-action="edit-style" data-id="${escapeAttr(style.id)}">
                 ${renderStyleCover(style)}
                 <span>${escapeHtml(style.name || "Estilo sem nome")}</span>
                 <small>${escapeHtml(style.sprite_workbench || style.background_workbench || "Workflow simples interno")}</small>
@@ -668,10 +1360,10 @@ function renderVisualStyles() {
             `).join("") : `<div class="empty-state">Nenhum estilo criado.</div>`}
           </div>
         </div>
-        <form id="style-form" class="panel style-editor-panel">
+        <form id="style-form" class="panel tw-panel style-editor-panel">
           <div class="section-head">
             <h2>${state.styleEditingId ? "Editar estilo" : "Novo estilo"}</h2>
-            ${state.styleEditingId ? `<button class="danger" type="button" data-action="delete-style" data-id="${escapeAttr(state.styleEditingId)}">Excluir</button>` : ""}
+            ${state.styleEditingId ? `<button class="danger tw-button-danger" type="button" data-action="delete-style" data-id="${escapeAttr(state.styleEditingId)}">Excluir</button>` : ""}
           </div>
           <div class="style-editor-main">
             <div class="style-cover-bar">
@@ -694,7 +1386,7 @@ function renderVisualStyles() {
           </div>
           <div class="mini-actions">
             <button type="button" data-action="dashboard">Voltar</button>
-            <button class="primary" type="submit">Salvar estilo</button>
+            <button class="primary tw-button-primary" type="submit">Salvar estilo</button>
           </div>
         </form>
       </section>
@@ -1478,11 +2170,11 @@ function renderLogEntry(log) {
       </div>
       ${log.error ? `<div class="notice">${escapeHtml(log.error)}</div>` : ""}
       <details>
-        <summary>Request</summary>
+        <summary>Requisição</summary>
         <pre>${escapeHtml(JSON.stringify(log.request_payload, null, 2))}</pre>
       </details>
       <details>
-        <summary>Response</summary>
+        <summary>Resposta</summary>
         <pre>${escapeHtml(JSON.stringify(log.response_payload, null, 2))}</pre>
       </details>
     </article>
@@ -1896,6 +2588,7 @@ function renderPlay() {
     <main class="vn-view" style="--background-filter-opacity: ${backgroundFilterOpacity / 100}">
       <div class="stage" ${background?.url ? `style="background-image: url('${escapeAttr(background.url)}')"` : ""}></div>
       <div class="vn-toolbar">
+        ${state.spriteEditMode ? `
         <div class="vn-display-controls">
           <label class="sprite-view-select">
             <span>Sprites</span>
@@ -1910,6 +2603,7 @@ function renderPlay() {
             <output>${backgroundFilterOpacity}%</output>
           </label>
         </div>
+        ` : ""}
       </div>
       <div class="vn-action-menu ${state.playMenuOpen ? "open" : ""}">
         <button
@@ -1923,18 +2617,27 @@ function renderPlay() {
           <img src="/icons/cardapio-hamburguer.png" alt="" aria-hidden="true">
           <span class="sr-only">Menu</span>
         </button>
+        <button
+          type="button"
+          class="vn-edit-mode-toggle ${state.spriteEditMode ? "active primary" : ""}"
+          data-action="toggle-sprite-edit-mode"
+          title="Modo de Edicao"
+          aria-label="Modo de Edicao"
+        >
+          <img src="/icons/edit.webp" alt="" aria-hidden="true">
+          <span>Modo de Edicao</span>
+        </button>
         <div class="vn-menu-items" role="menu" aria-label="Acoes da historia">
           <button type="button" data-action="dashboard" role="menuitem">Sair</button>
-          <button type="button" data-drawer="lore" role="menuitem">Menu</button>
+          <button type="button" data-drawer="lore" role="menuitem">Lore e memoria</button>
+          <button type="button" class="vn-menu-subitem" data-action="register-memory" role="menuitem">Registrar memoria</button>
           <button type="button" class="${state.editMode ? "primary" : ""}" data-action="toggle-edit-mode" role="menuitem">Editar</button>
-          <button type="button" data-action="register-memory" role="menuitem">Register</button>
           <button type="button" data-drawer="scene" role="menuitem">Cena</button>
           <button type="button" data-action="open-scenarios" role="menuitem">Cenários</button>
           <button type="button" data-action="open-references-menu" role="menuitem">Referências</button>
           <button type="button" data-drawer="history" role="menuitem">Historico</button>
           <button type="button" data-drawer="characters" role="menuitem">Personagens</button>
-          <button type="button" data-action="logs" role="menuitem">Logs</button>
-          <button type="button" data-action="depict-scene" role="menuitem">Depict</button>
+          <button type="button" data-action="depict-scene" role="menuitem" disabled>Ilustrar</button>
         </div>
       </div>
       <div class="sprite-layer ${state.spriteEditMode ? "sprite-editing" : ""}">
@@ -1949,26 +2652,37 @@ function renderPlay() {
         </div>
         <div class="input-row ${dialogueComplete ? "" : "hidden"}">
           <div class="prompt-box">
-            <textarea id="custom-action" maxlength="5000" placeholder="Escreva uma acao, fala ou direcao para a IA. Use [[ordem direta]] para instrucoes explicitas, ex.: [[Nao troque de cenario]]" ${state.busy ? "disabled" : ""}></textarea>
-            <span class="input-count">0/5000</span>
-          </div>
-          <div class="input-actions-row">
-            <button type="button" class="sprite-edit-toggle ${state.spriteEditMode ? "active" : ""}" data-action="toggle-sprite-edit-mode">Editar</button>
-            <div class="redo-menu-wrap input-redo-menu ${state.redoMenuOpen ? "open" : ""}">
+            <div class="redo-menu-wrap input-redo-menu prompt-side-action prompt-redo-action ${state.redoMenuOpen ? "open" : ""}">
               <button
                 type="button"
                 class="redo-action"
                 data-action="toggle-redo-menu"
                 aria-haspopup="menu"
                 aria-expanded="${state.redoMenuOpen ? "true" : "false"}"
+                aria-label="Refazer"
+                title="Refazer"
                 ${state.busy ? "disabled" : ""}
-              >Refazer</button>
+              >
+                <img class="mirrored-icon" src="/icons/angulo-duplo-pequeno-direito.png" alt="" aria-hidden="true">
+                <span class="sr-only">Refazer</span>
+              </button>
               <div class="redo-submenu" role="menu" aria-label="Opcoes de Refazer">
                 <button type="button" data-action="regenerate-current-scene" role="menuitem">Regerar cena</button>
                 <button type="button" data-action="open-redo-new-input" role="menuitem">Regerar cena com novo input</button>
               </div>
             </div>
-            <button class="primary continue-action" data-action="send-custom" ${state.busy ? "disabled" : ""}>Continuar</button>
+            <textarea id="custom-action" maxlength="5000" placeholder="Escreva uma acao, fala ou direcao para a IA. Use [[ordem direta]] para instrucoes explicitas, ex.: [[Nao troque de cenario]]" ${state.busy ? "disabled" : ""}></textarea>
+            <button
+              class="primary continue-action prompt-side-action prompt-continue-action"
+              data-action="send-custom"
+              aria-label="Continuar"
+              title="Continuar"
+              ${state.busy ? "disabled" : ""}
+            >
+              <img src="/icons/angulo-duplo-pequeno-direito.png" alt="" aria-hidden="true">
+              <span class="sr-only">Continuar</span>
+            </button>
+            <span class="input-count">0/5000</span>
           </div>
         </div>
       </section>
@@ -2917,9 +3631,9 @@ function renderCharactersDrawer() {
         <strong>${characters.length} personagem(ns)</strong>
       </div>
       <div class="character-drawer-actions">
-        <button type="button" data-action="open-appearance-designer" data-character-id="${escapeAttr(active?.id || "")}" ${active && isVisualCharacter(active) ? "" : "disabled"}>Appearance Designer</button>
-        <button type="button" disabled>Add Character</button>
-        <button type="button" disabled>Leave Scene</button>
+        <button type="button" data-action="open-appearance-designer" data-character-id="${escapeAttr(active?.id || "")}" ${active && isVisualCharacter(active) ? "" : "disabled"}>Designer de Aparências</button>
+        <button type="button" data-action="open-generate-character">Adicionar Personagem</button>
+        <button type="button" disabled>Sair da Cena</button>
       </div>
     </div>
     ${characters.length ? `
@@ -3082,7 +3796,9 @@ function renderCharacterDetail(character) {
           </div>
           <div class="character-action-row">
             <button data-action="edit-character" data-character-id="${escapeAttr(character.id)}">Editar</button>
-            ${visualCharacter ? `<button class="primary" data-action="refresh-sprite" data-character-id="${escapeAttr(character.id)}">Regenerate</button>` : ""}
+            <button data-action="open-character-ai-summary" data-character-id="${escapeAttr(character.id)}">Configurações Avançadas de Personagem</button>
+            ${visualCharacter ? `<button class="primary" data-action="refresh-sprite" data-character-id="${escapeAttr(character.id)}">Regenerar</button>` : ""}
+            <button class="danger" data-action="delete-character" data-character-id="${escapeAttr(character.id)}" data-character-name="${escapeAttr(character.name || "")}">Deletar</button>
           </div>
         </div>
       </div>
@@ -3194,6 +3910,54 @@ function characterSection(label, value) {
       <p>${escapeHtml(value || "Nao informado.")}</p>
     </section>
   `;
+}
+
+function buildCharacterAiPromptBrief(character) {
+  const name = summaryClean(character?.name || "Personagem");
+  const role = compactSummarySentence(character?.ai_role_summary || character?.role || character?.character_type || character?.description || "personagem ativo na cena", 80);
+  const personality = compactSummarySentence(character?.ai_personality_summary || character?.personality || character?.description || "personalidade nao informada", 90);
+  const voice = compactSummarySentence(character?.ai_voice_summary || character?.speech_style || "modo de fala nao informado", 90);
+  return `${name} | Role: ${role} Personality: ${personality} Voice: ${voice}`;
+}
+
+function summaryClean(value) {
+  return String(value || "").replaceAll("...", "").replace(/\s+/g, " ").trim();
+}
+
+function summarySentence(value) {
+  const text = summaryClean(value).replace(/[ ,;:]+$/g, "");
+  if (!text) return "";
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+function compactSummarySentence(value, limit) {
+  const text = summaryClean(value);
+  if (text.length <= limit) return summarySentence(text);
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const selected = [];
+  let length = 0;
+  for (const sentence of sentences) {
+    const extra = sentence.length + (selected.length ? 1 : 0);
+    if (selected.length && length + extra > limit) break;
+    if (!selected.length && sentence.length > limit) break;
+    selected.push(sentence);
+    length += extra;
+  }
+  if (selected.length) return summarySentence(selected.join(" "));
+  const words = text.split(/\s+/);
+  const chosen = [];
+  length = 0;
+  for (const word of words) {
+    const extra = word.length + (chosen.length ? 1 : 0);
+    if (chosen.length && length + extra > limit) break;
+    if (!chosen.length && extra > limit) {
+      chosen.push(word.slice(0, limit).replace(/[ ,.;:]+$/g, ""));
+      break;
+    }
+    chosen.push(word);
+    length += extra;
+  }
+  return summarySentence(chosen.join(" "));
 }
 
 function renderCharacterPortrait(character) {
@@ -3717,10 +4481,82 @@ function renderRegenerateScenarioModal() {
     </div>`;
 }
 
+function renderGenerateCharacterModal() {
+  const modal = state.modal || {};
+  const prompt = String(modal.prompt || "");
+  const valid = prompt.trim().length >= 20;
+  return `
+    <div class="modal-backdrop">
+      <form class="modal scenario-form-modal character-generate-modal" id="character-generate-form">
+        <div class="sprite-preview-head">
+          <h2>Adicionar Personagem</h2>
+          <button type="button" data-action="close-modal">Fechar</button>
+        </div>
+        <div class="field">
+          <label for="character-generate-prompt">Descreva o personagem</label>
+          <textarea id="character-generate-prompt" name="prompt" rows="8" maxlength="3000" placeholder="Descreva nome, papel, personalidade, aparência ou qualquer detalhe importante.">${escapeHtml(prompt)}</textarea>
+          <small id="character-generate-count" class="small-text">${prompt.trim().length}/20 caracteres mínimos</small>
+        </div>
+        ${modal.error ? `<p class="field-error">${escapeHtml(modal.error)}</p>` : ""}
+        <div class="mini-actions">
+          <button type="button" data-action="close-modal">Cancelar</button>
+          <button type="submit" class="primary" id="character-generate-submit" ${valid && !state.busy ? "" : "disabled"}>${state.busy ? "Gerando..." : "Gerar"}</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function renderCharacterAiSummaryModal() {
+  const character = (state.activeStory?.characters || []).find(item => item.id === state.modal.characterId) || {};
+  const draft = { ...character, ...(state.modal.draft || {}) };
+  const preview = buildCharacterAiPromptBrief(draft);
+  const error = state.modal.error || "";
+  return `
+    <div class="modal-backdrop">
+      <form class="modal character-ai-summary-modal" id="character-ai-summary-form" data-character-id="${escapeAttr(character.id || "")}">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">${escapeHtml(character.name || "Personagem")}</span>
+            <h2>Configurações Avançadas de Personagem</h2>
+          </div>
+          <button type="button" class="icon-close" data-action="close-modal" aria-label="Fechar">X</button>
+        </div>
+        <div class="form-grid">
+          ${characterAiSummaryTextarea("ai_role_summary", "Resumo da Função Narrativa", "Resumo curto de quem esse personagem é na história ou na cena.", draft.ai_role_summary)}
+          ${characterAiSummaryTextarea("ai_personality_summary", "Resumo de Personalidade", "Resumo curto da personalidade prática que a IA deve usar ao escrever o personagem.", draft.ai_personality_summary)}
+          ${characterAiSummaryTextarea("ai_voice_summary", "Resumo do Modo de Fala", "Resumo curto de como o personagem fala, seu tom, ritmo, vocabulário e estilo.", draft.ai_voice_summary)}
+          <div class="field full">
+            <label for="character-ai-prompt-brief">Resumo Final Enviado para a IA</label>
+            <p class="field-help">Preview somente leitura do texto enviado no ACTIVE CHARACTER BRIEF.</p>
+            <pre id="character-ai-prompt-brief" class="readonly-preview">${escapeHtml(preview)}</pre>
+          </div>
+        </div>
+        ${error ? `<p class="field-error">${escapeHtml(error)}</p>` : ""}
+        <div class="mini-actions">
+          <button type="button" data-action="close-modal">Cancelar</button>
+          <button type="button" data-action="regenerate-character-ai-summary" data-character-id="${escapeAttr(character.id || "")}" ${state.busy ? "disabled" : ""}>${state.busy ? "Regenerando..." : "Regenerar com IA"}</button>
+          <button class="primary" type="submit">Salvar</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function characterAiSummaryTextarea(name, label, help, value) {
+  return `
+    <div class="field full">
+      <label for="character-${name}">${escapeHtml(label)}</label>
+      <p class="field-help">${escapeHtml(help)}</p>
+      <textarea id="character-${name}" name="${name}" rows="3" data-ai-summary-field="true">${escapeHtml(value || "")}</textarea>
+    </div>
+  `;
+}
+
 function renderModal() {
   if (state.modal.type === "scenarios") return renderScenariosModal();
   if (state.modal.type === "scenarioCreate") return renderCreateScenarioModal();
   if (state.modal.type === "scenarioRegenerate") return renderRegenerateScenarioModal();
+  if (state.modal.type === "characterGenerate") return renderGenerateCharacterModal();
+  if (state.modal.type === "characterAiSummary") return renderCharacterAiSummaryModal();
   if (state.modal.type === "scenarioPreview") {
     const scenario = (state.activeStory?.scenarios || []).find(item => item.id === state.modal.scenarioId);
     return `
@@ -3940,6 +4776,7 @@ function renderModal() {
 
 function bindEvents() {
   bindSpriteAlphaHitTesting();
+  bindStageDialogueAdvance();
   document.querySelectorAll("[data-action]").forEach(element => {
     element.addEventListener("click", handleAction);
   });
@@ -4066,6 +4903,23 @@ function bindEvents() {
   if (redoNewInputForm) redoNewInputForm.addEventListener("submit", regenerateCurrentSceneWithInput);
   const characterEditForm = document.getElementById("character-edit-form");
   if (characterEditForm) characterEditForm.addEventListener("submit", saveCharacterEdit);
+  const characterAiSummaryForm = document.getElementById("character-ai-summary-form");
+  if (characterAiSummaryForm) characterAiSummaryForm.addEventListener("submit", saveCharacterAiSummary);
+  document.querySelectorAll("[data-ai-summary-field]").forEach(input => {
+    input.addEventListener("input", () => updateCharacterAiSummaryPreview(characterAiSummaryForm));
+  });
+  const characterGenerateForm = document.getElementById("character-generate-form");
+  if (characterGenerateForm) characterGenerateForm.addEventListener("submit", generateStoryCharacter);
+  const characterGeneratePrompt = document.getElementById("character-generate-prompt");
+  if (characterGeneratePrompt) {
+    characterGeneratePrompt.addEventListener("input", () => {
+      const length = characterGeneratePrompt.value.trim().length;
+      const submit = document.getElementById("character-generate-submit");
+      const counter = document.getElementById("character-generate-count");
+      if (submit) submit.disabled = length < 20 || state.busy;
+      if (counter) counter.textContent = `${length}/20 caracteres mínimos`;
+    });
+  }
   const appearanceDesignerForm = document.getElementById("appearance-designer-form");
   if (appearanceDesignerForm) appearanceDesignerForm.addEventListener("submit", generateCharacterAppearance);
   const appearanceRegenerateForm = document.getElementById("appearance-regenerate-form");
@@ -4145,6 +4999,28 @@ function bindEvents() {
   }
 }
 
+function advanceDialogueOnly() {
+  const scene = latestScene(state.activeStory);
+  const currentDialogue = getDialogueSequence(scene)[state.dialogueIndex] || null;
+  if (!isTypewriterComplete(scene, currentDialogue)) {
+    completeTypewriterLine(true);
+    return;
+  }
+  const sequence = getDialogueSequence(latestScene(state.activeStory));
+  state.dialogueIndex = Math.min(state.dialogueIndex + 1, Math.max(0, sequence.length - 1));
+  resetTypewriter();
+  render();
+}
+
+function bindStageDialogueAdvance() {
+  const stage = document.querySelector(".vn-view .stage");
+  if (!stage) return;
+  stage.addEventListener("click", event => {
+    if (event.button !== 0 || event.defaultPrevented || event.target !== stage) return;
+    advanceDialogueOnly();
+  });
+}
+
 function handleGlobalClick(event) {
   if (!state.redoMenuOpen) return;
   if (event.target.closest(".redo-menu-wrap")) return;
@@ -4154,6 +5030,10 @@ function handleGlobalClick(event) {
 
 function handleGlobalKeydown(event) {
   if (event.key !== "Escape") return;
+  if (state.messageDialog) {
+    resolveMessageDialog(false);
+    return;
+  }
   if (state.redoMenuOpen) {
     state.redoMenuOpen = false;
     render();
@@ -4167,6 +5047,14 @@ function handleGlobalKeydown(event) {
 
 async function handleAction(event) {
   const action = event.currentTarget.dataset.action;
+  if (action === "message-dialog-confirm") {
+    resolveMessageDialog(true);
+    return;
+  }
+  if (action === "message-dialog-cancel") {
+    resolveMessageDialog(false);
+    return;
+  }
   if (event.currentTarget.closest(".sprite-edit-panel")) {
     event.stopPropagation();
   }
@@ -4194,10 +5082,26 @@ async function handleAction(event) {
   state.playMenuOpen = false;
   state.redoMenuOpen = false;
   state.storyTopnavOpen = false;
+  if (action === "home") {
+    state.route = "home";
+    state.drawer = "";
+    state.modal = null;
+    render();
+  }
   if (action === "dashboard") {
     state.route = "dashboard";
     state.drawer = "";
     await loadStories();
+    render();
+  }
+  if (action === "continue-latest-story") {
+    const story = sortedStories()[0];
+    if (!story?.id) return;
+    await loadStory(story.id);
+    state.route = "play";
+    state.editMode = false;
+    state.dialogueSceneId = "";
+    state.dialogueIndex = 0;
     render();
   }
   if (action === "create") {
@@ -4398,21 +5302,14 @@ async function handleAction(event) {
   if (action === "add-character-to-scene") addCharacterToCurrentScene();
   if (action === "remove-character-from-scene") removeCharacterFromCurrentScene(event.currentTarget.dataset.name || "");
   if (action === "open-character-profile") openCharacterProfile(event.currentTarget.dataset.characterId || "");
+  if (action === "open-character-ai-summary") openCharacterAiSummaryModal(event.currentTarget.dataset.characterId || "");
+  if (action === "regenerate-character-ai-summary") regenerateCharacterAiSummary(event.currentTarget.dataset.characterId || "");
   if (action === "character-appearance-placeholder") {
     openAppearanceDesigner(event.currentTarget.dataset.characterId || "");
   }
   if (action === "delete-character") deleteCharacter(event.currentTarget.dataset.characterId || "", event.currentTarget.dataset.characterName || "");
   if (action === "next-dialogue") {
-    const scene = latestScene(state.activeStory);
-    const currentDialogue = getDialogueSequence(scene)[state.dialogueIndex] || null;
-    if (!isTypewriterComplete(scene, currentDialogue)) {
-      completeTypewriterLine(true);
-      return;
-    }
-    const sequence = getDialogueSequence(latestScene(state.activeStory));
-    state.dialogueIndex = Math.min(state.dialogueIndex + 1, Math.max(0, sequence.length - 1));
-    resetTypewriter();
-    render();
+    advanceDialogueOnly();
   }
   if (action === "continue") generateScene("");
   if (action === "send-custom") generateScene(document.getElementById("custom-action")?.value || "");
@@ -4447,6 +5344,10 @@ async function handleAction(event) {
     state.modal = { type: "character", character: {}, generated: false };
     render();
   }
+  if (action === "open-generate-character") {
+    state.modal = { type: "characterGenerate", prompt: "", error: "" };
+    render();
+  }
   if (action === "close-modal") {
     state.modal = null;
     render();
@@ -4465,7 +5366,7 @@ async function handleAction(event) {
 }
 
 async function stopApp() {
-  if (!confirm("Parar o servidor local do app?")) return;
+  if (!(await appConfirm("Parar o servidor local do app?"))) return;
   setBusy(true, "Parando app...");
   try {
     await api("/api/app/shutdown", { method: "POST", body: JSON.stringify({}) });
@@ -4480,11 +5381,12 @@ async function stopApp() {
 async function saveSettings(event) {
   event.preventDefault();
   const payload = collectSettingsPayload(event.currentTarget);
-  setBusy(true, "Salvando configurações...");
+  setBusy(true, t("status.saving_settings"));
   try {
     state.settings = await api("/api/settings", { method: "POST", body: JSON.stringify(payload) });
     await loadSettings();
-    alert("Configurações salvas.");
+    render();
+    alert(t("alert.settings_saved"));
   } catch (error) {
     alert(error.message);
   } finally {
@@ -4544,8 +5446,6 @@ function collectSettingsPayload(formElement) {
     "script_story_ai_show_window",
     "script_scene_ai_start_with_app",
     "script_scene_ai_show_window",
-    "script_llama_start_with_app",
-    "script_llama_show_window",
     "script_comfy_start_with_app",
     "script_comfy_show_window",
     ...roleLlamaBooleanFields("story_ai"),
@@ -4574,8 +5474,6 @@ function collectSettingsPayload(formElement) {
   if (form.has("script_story_ai_show_window")) payload.script_story_ai_show_window = payload.script_story_ai_show_window === true;
   if (form.has("script_scene_ai_start_with_app")) payload.script_scene_ai_start_with_app = payload.script_scene_ai_start_with_app === true;
   if (form.has("script_scene_ai_show_window")) payload.script_scene_ai_show_window = payload.script_scene_ai_show_window === true;
-  if (form.has("script_llama_start_with_app")) payload.script_llama_start_with_app = payload.script_llama_start_with_app === true;
-  if (form.has("script_llama_show_window")) payload.script_llama_show_window = payload.script_llama_show_window === true;
   if (form.has("script_comfy_start_with_app")) payload.script_comfy_start_with_app = payload.script_comfy_start_with_app === true;
   if (form.has("script_comfy_show_window")) payload.script_comfy_show_window = payload.script_comfy_show_window === true;
   payload.ollama_custom_presets = state.settings?.ollama_custom_presets || {};
@@ -4948,7 +5846,7 @@ function styleFormBool(data, key, fallback = false) {
 async function deleteVisualStyle(styleId) {
   if (!styleId) return;
   const style = state.visualStyles.find(item => item.id === styleId);
-  if (!confirm(`Excluir o estilo "${style?.name || styleId}"? Historias existentes manterao apenas o nome do estilo.`)) return;
+  if (!(await appConfirm(`Excluir o estilo "${style?.name || styleId}"? Historias existentes manterao apenas o nome do estilo.`))) return;
   setBusy(true, "Excluindo estilo...");
   try {
     await api(`/api/visual-styles/${styleId}`, { method: "DELETE" });
@@ -5185,6 +6083,7 @@ async function improveField(button) {
         field_type: button.dataset.fieldType || "descricao",
         field_label: button.dataset.label || target.name || target.id,
         story_context: collectFormContext(target.closest("form")),
+        ai_role: state.route === "create" ? "story" : "scene",
       }),
     });
     const currentTarget = document.getElementById(targetId);
@@ -5307,14 +6206,16 @@ async function updateStoryStatus(storyId, status) {
 
 async function deleteStory(storyId, title) {
   if (!storyId) return;
-  const ok = confirm(`Excluir "${title || "esta historia"}"? Esta acao remove cenas, personagens, memoria e assets salvos.`);
+  const ok = await appConfirm(`Excluir "${title || "esta historia"}"? Esta acao remove cenas, personagens, memoria e assets salvos.`);
   if (!ok) return;
 
   setBusy(true, "Excluindo historia...");
   try {
     const result = await api(`/api/stories/${storyId}`, { method: "DELETE" });
     if (result.delete_error) {
-      alert(`Historia excluida, mas a pasta local nao foi removida: ${result.delete_error}`);
+      alert(result.delete_pending
+        ? `Historia excluida. A pasta local ficou bloqueada pelo Windows e uma nova tentativa de remocao foi agendada em segundo plano.\n\nDetalhe: ${result.delete_error}`
+        : `Historia excluida, mas a pasta local nao foi removida: ${result.delete_error}`);
     }
     if (state.activeStory?.id === storyId) {
       state.activeStory = null;
@@ -5627,6 +6528,35 @@ async function introduceNewCharacter(name) {
   }
 }
 
+async function generateStoryCharacter(event) {
+  event.preventDefault();
+  if (!state.activeStory) return;
+  const prompt = String(new FormData(event.currentTarget).get("prompt") || "").trim();
+  if (prompt.length < 20) {
+    state.modal = { type: "characterGenerate", prompt, error: "Use pelo menos 20 caracteres para descrever o personagem." };
+    render();
+    return;
+  }
+  state.modal = { type: "characterGenerate", prompt, error: "" };
+  setBusy(true, "Criando personagem com a IA de narrativa...");
+  try {
+    const result = await api(`/api/stories/${state.activeStory.id}/characters/generate`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
+    state.activeStory = result.story || await api(`/api/stories/${state.activeStory.id}`);
+    state.activeCharacterId = result.character?.id || state.activeCharacterId;
+    state.characterEditId = "";
+    state.modal = null;
+    render();
+  } catch (error) {
+    state.modal = { type: "characterGenerate", prompt, error: error.message };
+    render();
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function saveModalCharacter(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -5678,6 +6608,99 @@ async function saveCharacterEdit(event) {
     await loadStory(state.activeStory.id);
   } catch (error) {
     alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function openCharacterAiSummaryModal(characterId) {
+  const character = (state.activeStory?.characters || []).find(item => item.id === characterId);
+  if (!character) return;
+  state.modal = {
+    type: "characterAiSummary",
+    characterId,
+    draft: {
+      ai_role_summary: character.ai_role_summary || "",
+      ai_personality_summary: character.ai_personality_summary || "",
+      ai_voice_summary: character.ai_voice_summary || "",
+    },
+    error: "",
+  };
+  render();
+}
+
+function collectCharacterAiSummaryDraft(form) {
+  const data = new FormData(form);
+  const character = (state.activeStory?.characters || []).find(item => item.id === form?.dataset.characterId) || {};
+  return {
+    name: character.name || "",
+    ai_role_summary: data.get("ai_role_summary") || "",
+    ai_personality_summary: data.get("ai_personality_summary") || "",
+    ai_voice_summary: data.get("ai_voice_summary") || "",
+  };
+}
+
+function updateCharacterAiSummaryPreview(form) {
+  if (!form) return;
+  const draft = collectCharacterAiSummaryDraft(form);
+  const preview = document.getElementById("character-ai-prompt-brief");
+  if (preview) preview.textContent = buildCharacterAiPromptBrief(draft);
+}
+
+async function saveCharacterAiSummary(event) {
+  event.preventDefault();
+  if (!state.activeStory) return;
+  const form = event.currentTarget;
+  const characterId = form.dataset.characterId || "";
+  const draft = collectCharacterAiSummaryDraft(form);
+  const payload = {
+    ai_role_summary: draft.ai_role_summary,
+    ai_personality_summary: draft.ai_personality_summary,
+    ai_voice_summary: draft.ai_voice_summary,
+    ai_prompt_brief: buildCharacterAiPromptBrief(draft),
+  };
+  setBusy(true, "Salvando resumos do personagem...");
+  try {
+    await api(`/api/characters/${characterId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.modal = null;
+    state.activeCharacterId = characterId;
+    await loadStory(state.activeStory.id);
+  } catch (error) {
+    state.modal = { ...(state.modal || {}), error: error.message, draft };
+    render();
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function regenerateCharacterAiSummary(characterId) {
+  if (!state.activeStory || !characterId) return;
+  const form = document.getElementById("character-ai-summary-form");
+  const currentDraft = form ? collectCharacterAiSummaryDraft(form) : (state.modal?.draft || {});
+  state.modal = { ...(state.modal || {}), draft: currentDraft, error: "" };
+  setBusy(true, "Regenerando resumos com IA...");
+  try {
+    const result = await api(`/api/characters/${characterId}/ai-summary/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.modal = {
+      type: "characterAiSummary",
+      characterId,
+      draft: {
+        ai_role_summary: result.ai_role_summary || "",
+        ai_personality_summary: result.ai_personality_summary || "",
+        ai_voice_summary: result.ai_voice_summary || "",
+      },
+      error: "",
+    };
+    render();
+  } catch (error) {
+    state.modal = { ...(state.modal || {}), draft: currentDraft, error: error.message };
+    render();
   } finally {
     setBusy(false);
   }
@@ -5811,7 +6834,7 @@ async function saveLoreEntry(event) {
 }
 
 async function deleteMemoryEntry(memoryId) {
-  if (!memoryId || !confirm("Excluir esta memoria?")) return;
+  if (!memoryId || !(await appConfirm("Excluir esta memoria?"))) return;
   setBusy(true, "Excluindo memoria...");
   try {
     state.activeStory = await api(`/api/memory/${memoryId}`, { method: "DELETE" });
@@ -5823,7 +6846,7 @@ async function deleteMemoryEntry(memoryId) {
 }
 
 async function deleteLoreEntry(loreId, title) {
-  if (!loreId || !confirm(`Excluir "${title || "esta entrada de lore"}"?`)) return;
+  if (!loreId || !(await appConfirm(`Excluir "${title || "esta entrada de lore"}"?`))) return;
   setBusy(true, "Excluindo lore...");
   try {
     state.activeStory = await api(`/api/lore/${loreId}`, { method: "DELETE" });
@@ -6191,7 +7214,7 @@ async function uploadStoryReferenceFile(file, logicalName = "") {
 
 async function deleteStoryReference(referenceId) {
   const reference = storyReferenceById(referenceId);
-  if (!reference || !confirm(`Excluir a referência "${reference.label || "Referência"}"?`)) return;
+  if (!reference || !(await appConfirm(`Excluir a referência "${reference.label || "Referência"}"?`))) return;
   try {
     await api(`/api/story-references/${encodeURIComponent(referenceId)}`, { method: "DELETE" });
     state.storyReferences = state.storyReferences.filter(item => item.id !== referenceId);
@@ -6278,7 +7301,7 @@ async function activateStoryScenario(scenarioId) {
 
 async function deleteStoryScenario(scenarioId) {
   const scenario = (state.activeStory?.scenarios || []).find(item => item.id === scenarioId);
-  if (!scenario || !confirm(`Deletar o cenário "${scenario.name}"? O histórico de diálogos e cenas será preservado.`)) return;
+  if (!scenario || !(await appConfirm(`Deletar o cenário "${scenario.name}"? O histórico de diálogos e cenas será preservado.`))) return;
   setBusy(true, "Deletando cenário...");
   try {
     const result = await api(`/api/stories/${state.activeStory.id}/scenarios/${scenarioId}`, { method: "DELETE" });
@@ -6499,7 +7522,7 @@ async function regenerateExistingAppearance(event) {
     render();
     return;
   }
-  const ok = confirm("Esta ação substituirá a aparência selecionada. A imagem anterior será perdida. Deseja continuar?");
+  const ok = await appConfirm("Esta ação substituirá a aparência selecionada. A imagem anterior será perdida. Deseja continuar?");
   if (!ok) return;
   const scene = latestScene(state.activeStory);
   setBusy(true, "Enviando regeneração de aparência para o ComfyUI...");
@@ -6535,7 +7558,7 @@ async function deleteCharacter(characterId, characterName = "") {
   const character = (state.activeStory?.characters || []).find(item => item.id === characterId);
   if (!character) return;
   const name = characterName || character.name || "este personagem";
-  const ok = confirm(
+  const ok = await appConfirm(
     `Deletar ${name} da historia?\n\n` +
     "O personagem sera removido da historia e nao sera mais enviado para a IA como personagem ativo/relevante.\n" +
     "Os dados do personagem e sprites associados serao deletados.\n" +
@@ -6801,7 +7824,7 @@ async function regenerateSelectedExpressions() {
   const characterId = state.modal.characterId;
   const baseSpriteId = state.modal.baseSpriteId;
   const actionLabel = selected.length > 1 ? "as expressoes selecionadas" : `a expressao ${EXPRESSION_LABELS[selected[0]] || selected[0]}`;
-  if (!confirm(`Regenerar ${actionLabel}? As imagens atuais serao substituidas nesta aparencia.`)) return;
+  if (!(await appConfirm(`Regenerar ${actionLabel}? As imagens atuais serao substituidas nesta aparencia.`))) return;
 
   const failures = [];
   setBusy(true, selected.length > 1 ? "Regenerando expressoes..." : "Regenerando expressao...");
@@ -6894,7 +7917,7 @@ async function refreshSprite(characterId) {
     return;
   }
 
-  const ok = confirm(`Excluir o sprite atual de ${character.name} e gerar um novo?`);
+  const ok = await appConfirm(`Excluir o sprite atual de ${character.name} e gerar um novo?`);
   if (!ok) return;
 
   setBusy(true, "Excluindo sprite atual...");
@@ -7187,7 +8210,7 @@ function improveButton(target, fieldType, label) {
       data-target="${escapeAttr(target)}"
       data-field-type="${escapeAttr(fieldType)}"
       data-label="${escapeAttr(label)}"
-    >🪄 Melhorar</button>
+    >Melhorar</button>
   `;
 }
 

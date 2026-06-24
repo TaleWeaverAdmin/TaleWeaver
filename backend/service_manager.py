@@ -17,14 +17,13 @@ COMFY_TEXT_AI_RESUME_DELAY_SECONDS = 2.0
 
 _lock = threading.RLock()
 _processes = {
-    "llama": {"process": None, "started_by_app": False},
     "story_ai": {"process": None, "started_by_app": False},
     "scene_ai": {"process": None, "started_by_app": False},
     "comfy": {"process": None, "started_by_app": False},
 }
 _active_comfy_jobs = {}
-_llama_resume_after_comfy = False
-_llama_resume_timer = None
+_text_ai_resume_after_comfy = False
+_text_ai_resume_timer = None
 _active_text_ai_role = None
 
 
@@ -49,12 +48,11 @@ def service_status(settings=None):
     with _lock:
         cleanup_process_refs()
         return {
-            "llama": status_for_service(settings, "llama"),
             "story_ai": status_for_service(settings, "story_ai"),
             "scene_ai": status_for_service(settings, "scene_ai"),
             "comfy": status_for_service(settings, "comfy"),
             "active_comfy_jobs": len(_active_comfy_jobs),
-            "llama_paused_for_comfy": _llama_resume_after_comfy,
+            "text_ai_paused_for_comfy": _text_ai_resume_after_comfy,
             "active_text_ai_role": active_text_ai_service(settings),
         }
 
@@ -135,8 +133,6 @@ def activate_text_ai_role(role, settings=None):
         stop_service(active, settings, reason=f"switch-to-{target}", allow_external=True)
 
     if role == "story":
-        if active is None and not same_service_target(settings, "story_ai", "llama"):
-            stop_service("llama", settings, reason="switch-to-story-ai", allow_external=True)
         result = start_service("story_ai", settings, reason="switch-to-story-ai")
         return wait_for_text_ai_ready("story_ai", settings, result)
     if role == "scene":
@@ -145,7 +141,7 @@ def activate_text_ai_role(role, settings=None):
 
 
 def is_text_ai_service(service):
-    return service in {"llama", "story_ai", "scene_ai"}
+    return service in {"story_ai", "scene_ai"}
 
 
 def active_text_ai_service(settings=None):
@@ -154,7 +150,7 @@ def active_text_ai_service(settings=None):
         cleanup_process_refs()
         if _active_text_ai_role and text_ai_service_has_runtime(settings, _active_text_ai_role):
             return _active_text_ai_role
-        for service in ("scene_ai", "story_ai", "llama"):
+        for service in ("scene_ai", "story_ai"):
             if text_ai_service_has_runtime(settings, service, require_tracked_process=True):
                 return service
     return None
@@ -273,7 +269,7 @@ def readiness_endpoints(url, service, settings):
     base = str(url or "").rstrip("/")
     if not base:
         return []
-    if service in {"story_ai", "scene_ai", "llama"}:
+    if service in {"story_ai", "scene_ai"}:
         root = service_root_url(base)
         provider = text_ai_provider_for_service(settings, service)
         if provider == "ollama":
@@ -420,7 +416,7 @@ def begin_comfy_generation(settings=None, reason="comfy-generation"):
         cancel_pending_text_ai_resume_locked()
         expire_stale_comfy_generations_locked(settings)
         if not _active_comfy_jobs:
-            pause_llama_for_comfy_locked(settings)
+            pause_text_ai_for_comfy_locked(settings)
         _active_comfy_jobs[token] = {"created_at": time.time(), "reason": reason, "asset_id": "", "prompt_id": ""}
     schedule_stale_cleanup()
     return token
@@ -451,15 +447,14 @@ def end_comfy_generation(token=None, asset_id="", settings=None, reason="done"):
             schedule_text_ai_resume_locked(settings, reason)
 
 
-def pause_llama_for_comfy_locked(settings):
-    global _llama_resume_after_comfy
+def pause_text_ai_for_comfy_locked(settings):
+    global _text_ai_resume_after_comfy
     config = service_config(settings, "scene_ai")
     story_config = service_config(settings, "story_ai")
-    legacy_config = service_config(settings, "llama")
-    if not config["command"] and not story_config["command"] and not legacy_config["command"]:
+    if not config["command"] and not story_config["command"]:
         db.add_api_log(
             "local",
-            "script:llama:pause-for-comfy",
+            "script:text-ai:pause-for-comfy",
             safe_config(config),
             {"paused": False, "reason": "scene_ai_command_not_configured"},
         )
@@ -468,34 +463,33 @@ def pause_llama_for_comfy_locked(settings):
     story_result = {"stopped": False}
     if not same_service_target(settings, "story_ai", "scene_ai"):
         story_result = stop_service("story_ai", settings, reason="before-comfy", allow_external=True)
-    legacy_result = stop_service("llama", settings, reason="before-comfy", allow_external=True)
-    if result.get("stopped") or story_result.get("stopped") or legacy_result.get("stopped"):
-        _llama_resume_after_comfy = True
+    if result.get("stopped") or story_result.get("stopped"):
+        _text_ai_resume_after_comfy = True
         return
-    remaining = local_listener_pids(config.get("url")) + local_listener_pids(story_config.get("url")) + local_listener_pids(legacy_config.get("url"))
+    remaining = local_listener_pids(config.get("url")) + local_listener_pids(story_config.get("url"))
     if remaining:
         raise RuntimeError(f"Nao foi possivel parar a IA de texto antes do ComfyUI. PIDs ainda ativos: {remaining}")
 
 
-def resume_llama_after_comfy_locked(settings, reason):
-    global _llama_resume_after_comfy
-    if not _llama_resume_after_comfy:
+def resume_text_ai_after_comfy_locked(settings, reason):
+    global _text_ai_resume_after_comfy
+    if not _text_ai_resume_after_comfy:
         return
-    _llama_resume_after_comfy = False
+    _text_ai_resume_after_comfy = False
     try:
         start_service("scene_ai", settings, reason=f"after-comfy:{reason}")
     except Exception as exc:
         db.add_api_log(
             "local",
-            "script:llama:restart-after-comfy",
-            safe_config(service_config(settings, "llama")),
+            "script:text-ai:restart-after-comfy",
+            safe_config(service_config(settings, "scene_ai")),
             status="error",
             error=str(exc),
         )
 
 
 def schedule_text_ai_resume_locked(settings, reason):
-    global _llama_resume_timer
+    global _text_ai_resume_timer
     cancel_pending_text_ai_resume_locked()
     timer = threading.Timer(
         COMFY_TEXT_AI_RESUME_DELAY_SECONDS,
@@ -503,25 +497,25 @@ def schedule_text_ai_resume_locked(settings, reason):
         args=(reason,),
     )
     timer.daemon = True
-    _llama_resume_timer = timer
+    _text_ai_resume_timer = timer
     timer.start()
 
 
 def cancel_pending_text_ai_resume_locked():
-    global _llama_resume_timer
-    if _llama_resume_timer:
-        _llama_resume_timer.cancel()
-        _llama_resume_timer = None
+    global _text_ai_resume_timer
+    if _text_ai_resume_timer:
+        _text_ai_resume_timer.cancel()
+        _text_ai_resume_timer = None
 
 
 def resume_text_ai_if_comfy_idle(reason):
-    global _llama_resume_timer
+    global _text_ai_resume_timer
     settings = db.get_settings()
     with _lock:
-        _llama_resume_timer = None
+        _text_ai_resume_timer = None
         expire_stale_comfy_generations_locked(settings)
         if not _active_comfy_jobs:
-            resume_llama_after_comfy_locked(settings, reason)
+            resume_text_ai_after_comfy_locked(settings, reason)
 
 
 def schedule_stale_cleanup():
@@ -577,15 +571,6 @@ def cleanup_process_refs():
 
 
 def service_config(settings, service):
-    if service == "llama":
-        return {
-            "label": "Llama",
-            "cwd": settings.get("script_llama_cwd") or "",
-            "command": settings.get("script_llama_command") or "",
-            "start_with_app": settings.get("script_llama_start_with_app") is True,
-            "show_window": settings.get("script_llama_show_window") is True,
-            "url": llama_url(settings),
-        }
     if service == "story_ai":
         return {
             "label": "IA de geracao de historia",
@@ -598,10 +583,10 @@ def service_config(settings, service):
     if service == "scene_ai":
         return {
             "label": "IA de narrativa",
-            "cwd": settings.get("script_scene_ai_cwd") or settings.get("script_llama_cwd") or "",
-            "command": settings.get("script_scene_ai_command") or settings.get("script_llama_command") or "",
-            "start_with_app": settings.get("script_scene_ai_start_with_app") is True or settings.get("script_llama_start_with_app") is True,
-            "show_window": settings.get("script_scene_ai_show_window") is not False and settings.get("script_llama_show_window") is not False,
+            "cwd": settings.get("script_scene_ai_cwd") or "",
+            "command": settings.get("script_scene_ai_command") or "",
+            "start_with_app": settings.get("script_scene_ai_start_with_app") is True,
+            "show_window": settings.get("script_scene_ai_show_window") is not False,
             "url": settings.get("scene_ai_openai_compatible_base_url") or settings.get("openai_compatible_base_url") or "",
         }
     if service == "comfy":
@@ -614,12 +599,6 @@ def service_config(settings, service):
             "url": settings.get("comfy_url") or "",
         }
     raise ValueError(f"Servico desconhecido: {service}")
-
-
-def llama_url(settings):
-    if settings.get("openai_compatible_llama_mode") is True:
-        return settings.get("openai_compatible_base_url") or ""
-    return settings.get("openai_compatible_base_url") or ""
 
 
 def safe_config(config):

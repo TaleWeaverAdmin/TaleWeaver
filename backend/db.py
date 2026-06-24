@@ -6,7 +6,6 @@ import sqlite3
 import time
 import unicodedata
 import uuid
-from pathlib import Path
 
 from .config import DATA_DIR, DB_PATH, ROOT_DIR, STORIES_DIR, STYLE_COVERS_DIR, DEFAULT_SETTINGS, DEFAULT_VISUAL_STYLES
 

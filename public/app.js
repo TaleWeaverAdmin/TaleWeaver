@@ -2499,37 +2499,6 @@ function countFilled(values) {
 }
 
 function renderCreateVisualStyle(draft) {
-  const styles = [
-    ["anime visual novel", "Anime VN", "Personagens limpos, cores vivas, composição de romance visual."],
-    ["painterly fantasy visual novel", "Fantasia painterly", "Ambientes dramáticos, luz suave e textura de ilustração."],
-    ["retro anime visual novel", "Anime retrô", "Contraste alto, atmosfera noventista e enquadramentos simples."],
-    ["cinematic realistic visual novel", "Cinemático realista", "Iluminação de filme, materiais naturais e clima sério."],
-    ["dark comic visual novel", "Quadrinhos escuro", "Sombras marcadas, contornos fortes e energia pulp."],
-  ];
-  return `
-    <section class="panel wizard-panel">
-      <h2>Estilo visual</h2>
-      <div class="style-grid">
-        ${styles.map(([value, title, description]) => `
-          <button type="button" class="style-card ${draft.visual_style === value ? "active" : ""}" data-action="select-style" data-value="${escapeAttr(value)}">
-            <span>${escapeHtml(title)}</span>
-            <small>${escapeHtml(description)}</small>
-          </button>
-        `).join("")}
-      </div>
-      <div class="form-grid">
-        ${draftField("visual_style", "Estilo final", "text", "anime visual novel", draft.visual_style)}
-      </div>
-      <div class="review-strip">
-        <strong>${escapeHtml(draft.title || "História sem título")}</strong>
-        <span>${escapeHtml(draft.genre || "sem gênero")}</span>
-        <span>${escapeHtml((draft.characters || []).filter(item => item.name).length)} personagem(ns)</span>
-      </div>
-    </section>
-  `;
-}
-
-function renderCreateVisualStyle(draft) {
   const styles = state.visualStyles || [];
   return `
     <section class="panel wizard-panel">

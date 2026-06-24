@@ -1,21 +1,38 @@
-# Python caches
+﻿# Python caches
 __pycache__/
-*.py[cod]
+*.py[codz]
 *$py.class
 
 # Local runtime data and generated assets
 data/
-
-# Logs
-*.log
-server.err.log
-server.out.log
 
 # Local/reference material not part of TaleWeaver
 dreamRunner Examples/
 
 # Local Codex/session memory
 SESSION_MEMORY.md
+
+# Virtual environments and local config
+.env
+.envrc
+.venv/
+env/
+venv/
+ENV/
+
+# Build, packaging, and test output
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Logs
+*.log
+server.err.log
+server.out.log
 
 # Editor and OS noise
 .vscode/

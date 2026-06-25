@@ -260,11 +260,15 @@ const UI_TRANSLATIONS_EN = {
   "Regerar cena": "Regenerate scene",
   "Regerar cena com novo input": "Regenerate scene with new input",
   "Regerar cenario": "Regenerate background",
+  "Regerar Expressao": "Regenerate Expression",
+  "Regerar Expressoes": "Regenerate Expressions",
   "Regenerar": "Regenerate",
   "Regenerar cenario": "Regenerate background",
   "Regenerar Sprite": "Regenerate Sprite",
   "Regenerar aparencia": "Regenerate appearance",
   "Regenerar com IA": "Regenerate with AI",
+  "Regenerando expressao...": "Regenerating expression...",
+  "Regenerando expressoes...": "Regenerating expressions...",
   "Regenerando...": "Regenerating...",
   "Registrar": "Register",
   "Registrar memoria": "Register Memory",
@@ -286,6 +290,18 @@ const UI_TRANSLATIONS_EN = {
   "Scripts": "Scripts",
   "Selecionar": "Select",
   "Selecionar aparencia": "Select appearance",
+  "Selecionar {}": "Select {}",
+  "Editar metadados": "Edit metadata",
+  "Editar aparencia": "Edit appearance",
+  "Excluir aparencia": "Delete appearance",
+  "Metadados da aparencia": "Appearance metadata",
+  "Resumo": "Summary",
+  "Tags / Palavras-chave": "Tags / Keywords",
+  "Salvando aparencia...": "Saving appearance...",
+  "Excluindo aparencia...": "Deleting appearance...",
+  "Excluir esta aparencia? Os sprites associados tambem serao removidos.": "Delete this appearance? Associated sprites will also be removed.",
+  "A aparencia ativa nao pode ser excluida": "The active appearance cannot be deleted",
+  "A aparencia ativa nao pode ser excluida. Ative outra aparencia antes de excluir esta.": "The active appearance cannot be deleted. Activate another appearance before deleting this one.",
   "Sem dialogos nesta cena.": "No dialogue in this scene.",
   "Sistema": "System",
   "Sprite largura": "Sprite width",
@@ -394,6 +410,8 @@ const UI_TRANSLATIONS_EN = {
   "Fato": "Fact",
   "Gerar": "Generate",
   "Gerando...": "Generating...",
+  "Enviando...": "Sending...",
+  "Enviar": "Send",
   "Gerar prompt": "Generate prompt",
   "Gere uma cena antes de editar.": "Generate a scene before editing.",
   "Imagem ainda nao disponivel.": "Image not available yet.",
@@ -469,6 +487,8 @@ const UI_TRANSLATIONS_EN = {
   "Tipo": "Type",
   "Uma Referencia": "One Reference",
   "Regenerar {}? As imagens atuais serao substituidas nesta aparencia.": "Regenerate {}? The current images in this appearance will be replaced.",
+  "Regenerar a expressao {}? As imagens atuais serao substituidas nesta aparencia.": "Regenerate the {} expression? The current images in this appearance will be replaced.",
+  "Regenerar as expressoes selecionadas? As imagens atuais serao substituidas nesta aparencia.": "Regenerate the selected expressions? The current images in this appearance will be replaced.",
   "Registrar informacao": "Register information",
   "Regra": "Rule",
   "Algumas expressoes falharam:\\n{}": "Some expressions failed:\\n{}",
@@ -476,10 +496,239 @@ const UI_TRANSLATIONS_EN = {
   "ComfyUI nao respondeu: {}": "ComfyUI did not respond: {}",
   "Personagem {} criado, mas sem prompt de imagem.": "Character {} was created, but without an image prompt.",
   "A referencia \"{}\" ja existe.": "Reference \"{}\" already exists.",
+  "A referencia \"{}\" nao existe. Deseja adiciona-la agora?": "Reference \"{}\" does not exist. Add it now?",
+  "A cena atual ainda nao tem prompt de background.": "The current scene does not have a background prompt yet.",
+  "A cena ja tem 6 personagens em tela.": "The scene already has 6 characters on screen.",
+  "Adicionando referencia...": "Adding reference...",
+  "Adicionando referencia {}...": "Adding reference {}...",
+  "Ampliar referencia": "Enlarge reference",
+  "App parado. Pode fechar esta aba.": "App stopped. You can close this tab.",
+  "Arquivando historia...": "Archiving story...",
+  "Ativar Expressoes": "Enable expressions",
+  "Bravo": "Angry",
+  "Carregar/selecionar referencia": "Load/select reference",
+  "Cenarios existentes": "Existing scenarios",
+  "Configure o Workflow de Alterar Expressoes no estilo atual antes de regenerar.": "Configure the Expression Change workflow in the current style before regenerating.",
+  "Descreva o que deseja mudar na aparencia.": "Describe what you want to change in the appearance.",
+  "Duplicando historia...": "Duplicating story...",
+  "English (en-US)": "English (en-US)",
+  "Escreva a informacao antes de registrar.": "Write the information before registering it.",
+  "Escreva a memoria antes de salvar.": "Write the memory before saving.",
+  "Escreva algo no campo antes de pedir para melhorar.": "Write something in the field before asking to improve it.",
+  "Escreva o conteudo de lore antes de salvar.": "Write the lore content before saving.",
+  "Escreva uma ideia antes de gerar a base da historia.": "Write an idea before generating the story foundation.",
+  "Este personagem nao usa prompt de imagem neste modo de participacao.": "This character does not use an image prompt in this participation mode.",
+  "Este personagem nao usa sprite neste modo de participacao.": "This character does not use a sprite in this participation mode.",
+  "Estilo salvo.": "Style saved.",
+  "Ex: trocar a roupa por uma armadura escura": "E.g.: change the outfit to dark armor",
+  "Excluir referencia": "Delete reference",
+  "Feliz": "Happy",
+  "Gere ou preencha o Prompt para Geracao de Imagem antes de gerar o sprite.": "Generate or fill in the Image Generation Prompt before generating the sprite.",
+  "Gere ou preencha o Prompt para Geracao de Imagem antes de regenerar o sprite.": "Generate or fill in the Image Generation Prompt before regenerating the sprite.",
+  "Gere uma cena antes de pedir imagens.": "Generate a scene before requesting images.",
+  "Informe o nome do estilo.": "Enter the style name.",
+  "Informe o prompt do cenario.": "Enter the background prompt.",
+  "Informe um nome para o preset custom.": "Enter a name for the custom preset.",
+  "Logs": "Logs",
+  "Menu": "Menu",
+  "Menu da historia": "Story menu",
+  "Nao ha cena anterior para regerar a cena atual.": "There is no previous scene to regenerate the current scene.",
+  "Neutro": "Neutral",
+  "O nome da referencia nao pode ficar vazio.": "The reference name cannot be empty.",
+  "O prompt de expressao nao pode ficar vazio.": "The expression prompt cannot be empty.",
+  "Ordenar historias": "Sort stories",
+  "Parando app...": "Stopping app...",
+  "Pensativo": "Thoughtful",
+  "Preset excluido.": "Preset deleted.",
+  "Preset salvo.": "Preset saved.",
+  "Quantidade de referencias": "Number of references",
+  "Regenerando {} ({}/{})...": "Regenerating {} ({}/{})...",
+  "Regenerando aparencia no ComfyUI...": "Regenerating appearance on ComfyUI...",
+  "Regenerando cenario no ComfyUI...": "Regenerating background on ComfyUI...",
+  "Regenerando resumos com IA...": "Regenerating summaries with AI...",
+  "Registrando memoria...": "Registering memory...",
+  "Restaurando historia...": "Restoring story...",
+  "Selecione a segunda referencia antes de gerar.": "Select the second reference before generating.",
+  "Selecione um preset customizado para excluir.": "Select a custom preset to delete.",
+  "Selecione uma aparencia de referencia antes de gerar.": "Select a reference appearance before generating.",
+  "Selecionar sprite de referencia": "Select reference sprite",
+  "Surpreso": "Surprised",
+  "Testando ComfyUI...": "Testing ComfyUI...",
+  "Timido": "Embarrassed",
+  "Triste": "Sad",
+  "Use apenas letras, numeros, espacos, underline e hifen no nome da referencia.": "Use only letters, numbers, spaces, underscores, and hyphens in the reference name.",
+  "Use letras, numeros, espaco, hifen ou underline no nome do preset.": "Use letters, numbers, spaces, hyphens, or underscores in the preset name.",
+  "Veja o que foi enviado para IA/ComfyUI e o que voltou.": "See what was sent to AI/ComfyUI and what came back.",
+  "Primeira pessoa": "First person",
+  "Terceira pessoa": "Third person",
+  "Voce e o protagonista": "You are the protagonist",
+  "Voce controla um protagonista visivel": "You control a visible protagonist",
+  "Voce guia a historia inteira": "You guide the entire story",
+  "Jogador": "Player",
+  "Protagonista": "Protagonist",
+  "Experiencia imersiva pelos olhos do personagem. O protagonista representa voce, nao aparece na tela e nao gera sprite.": "An immersive experience through the character's eyes. The protagonist represents you, does not appear on screen, and does not generate a sprite.",
+  "Visual novel tradicional. O protagonista representa voce, aparece em cena quando fizer sentido e pode ter sprite.": "Traditional visual novel mode. The protagonist represents you, appears in scenes when it makes sense, and can have a sprite.",
+  "Modo mais livre e cinematografico. Voce nao e um personagem, pode mudar foco, eventos e rumos do elenco.": "A freer, more cinematic mode. You are not a character, and can change focus, events, and the cast's direction.",
+  "Protagonista narrativo opcional": "Optional narrative protagonist",
+  "Protagonista controlado": "Controlled protagonist",
+  "Seu personagem": "Your character",
+  "No modo narrador, voce nao e esse personagem. Preencha apenas se a historia tiver um protagonista central; ele sera tratado como parte do elenco.": "In narrator mode, you are not this character. Fill this in only if the story has a central protagonist; they will be treated as part of the cast.",
+  "Na terceira pessoa, voce controla esse protagonista e ele pode aparecer na tela com sprite quando estiver em cena.": "In third person, you control this protagonist and they can appear on screen with a sprite when they are in the scene.",
+  "Na primeira pessoa, esse personagem representa voce, mas nao aparece na tela e nao gera sprite.": "In first person, this character represents you, but does not appear on screen and does not generate a sprite.",
+  "Criando historia...": "Creating story...",
+  "Excluindo historia...": "Deleting story...",
+  "Gerando prompts de expressao dos personagens...": "Generating character expression prompts...",
+  "Gerando prompts de expressao de {}...": "Generating expression prompts for {}...",
+  "Gerando imagens iniciais...": "Generating initial images...",
+  "Gerando resposta com IA...": "Generating AI response...",
+  "Gerando base da historia com IA...": "Generating story foundation with AI...",
+  "Gerando teste de prompt...": "Generating prompt test...",
+  "Gerando cenario no ComfyUI...": "Generating background on ComfyUI...",
+  "Gerando background no ComfyUI...": "Generating background on ComfyUI...",
+  "Gerando background inicial no ComfyUI...": "Generating initial background on ComfyUI...",
+  "Gerando nova aparencia no ComfyUI...": "Generating new appearance on ComfyUI...",
+  "Gerando sprite no ComfyUI...": "Generating sprite on ComfyUI...",
+  "Gerando sprite de {}...": "Generating {} sprite...",
+  "Gerando sprite inicial de {}...": "Generating initial sprite for {}...",
+  "Gerando expressao {} no ComfyUI...": "Generating {} expression on ComfyUI...",
+  "Gerando sprites da cena...": "Generating scene sprites...",
+  "Gerando sprites iniciais...": "Generating initial sprites...",
+  "Melhorando...": "Improving...",
+  "Salvando preset...": "Saving preset...",
+  "Salvando estilo...": "Saving style...",
+  "Salvando personagem...": "Saving character...",
+  "Salvando resumos do personagem...": "Saving character summaries...",
+  "Salvando memoria...": "Saving memory...",
+  "Salvando lore...": "Saving lore...",
+  "Salvando cena...": "Saving scene...",
+  "Salvando prompt de expressao...": "Saving expression prompt...",
+  "Excluindo preset...": "Deleting preset...",
+  "Excluindo estilo...": "Deleting style...",
+  "Excluindo memoria...": "Deleting memory...",
+  "Excluindo lore...": "Deleting lore...",
+  "Excluindo sprite atual...": "Deleting current sprite...",
+  "Criando personagem com a IA de narrativa...": "Creating character with the narrative AI...",
+  "Criando ficha de {}...": "Creating {}'s sheet...",
+  "Criando cenario no ComfyUI...": "Creating background on ComfyUI...",
+  "Regerando cena com IA...": "Regenerating scene with AI...",
+  "Regerando cenario no ComfyUI...": "Regenerating background on ComfyUI...",
+  "Enviando nova aparencia para o ComfyUI...": "Sending new appearance to ComfyUI...",
+  "Enviando regeneracao de aparencia para o ComfyUI...": "Sending appearance regeneration to ComfyUI...",
+  "Enviando background para ComfyUI...": "Sending background to ComfyUI...",
+  "Enviando novo cenario para ComfyUI...": "Sending new background to ComfyUI...",
+  "Enviando sprite para ComfyUI...": "Sending sprite to ComfyUI...",
+  "Preparando imagens da cena...": "Preparing scene images...",
+  "Selecionando aparencia...": "Selecting appearance...",
+  "Ativando cenario...": "Activating background...",
+  "Deletando cenario...": "Deleting background...",
+  "Atualizando cena...": "Updating scene...",
+  "Gerando prompt de imagem com IA...": "Generating image prompt with AI...",
+  "Deletando {}...": "Deleting {}...",
+  "Digite um input antes de regerar.": "Enter input before regenerating.",
+  "Erro ao enviar imagem.": "Error sending image.",
+  "Erro ao enviar referencia.": "Error sending reference.",
+  "Erro inesperado.": "Unexpected error.",
+  "Asset sem ID.": "Asset has no ID.",
+  "Falha ao atualizar aparencia: {}": "Failed to update appearance: {}",
+  "Imagem de referencia ausente para {}.": "Reference image missing for {}.",
+  "Informe o novo prompt.": "Enter the new prompt.",
+  "Selecione a segunda referencia.": "Select the second reference.",
+  "Selecione uma aparencia de referencia valida.": "Select a valid reference appearance.",
+  "Use pelo menos 20 caracteres para descrever o personagem.": "Use at least 20 characters to describe the character.",
+  "Relacao com protagonista": "Relationship with protagonist",
+  "Relacao com a cena/protagonista": "Relationship with the scene/protagonist",
+  "Historia nao encontrada.": "Story not found.",
+  "Descreva a ideia da historia antes de gerar a criacao inicial.": "Describe the story idea before generating the initial creation.",
+  "Resposta de geracao de historia invalida: campos ausentes: {}.": "Invalid story-generation response: missing fields: {}.",
+  "Resposta de geracao de historia invalida: starting_message viola o modo de participacao.": "Invalid story-generation response: starting_message violates the participation mode.",
+  "Resposta sem a lista characters.": "Response did not include the characters list.",
+  "Prompts ausentes para {}: {}.": "Missing prompts for {}: {}.",
+  "Prompt duplicado entre personagens: {} / {}.": "Duplicate prompt between characters: {} / {}.",
+  "Prompt invalido para {} / {}: o texto deve estar em ingles.": "Invalid prompt for {} / {}: the text must be in English.",
+  "Resposta de IA invalida para {}: campos ausentes: {}.": "Invalid AI response for {}: missing fields: {}.",
+  "Personagem sem nome.": "Character has no name.",
+  "A IA nao retornou um objeto JSON.": "The AI did not return a JSON object.",
+  "Texto ausente para melhoria por IA.": "Missing text for AI improvement.",
+  "Resposta de melhoria invalida: campo improved_text vazio.": "Invalid improvement response: improved_text is empty.",
+  "Texto ausente para prompt visual por IA.": "Missing text for AI visual prompt.",
+  "Resposta de prompt visual invalida: visual_prompt vazio.": "Invalid visual prompt response: visual_prompt is empty.",
+  "Texto fonte ausente para gerar prompt visual.": "Missing source text to generate visual prompt.",
+  "Perfil de prompt ausente e nenhum prompt visual existente foi informado.": "Prompt profile is missing and no existing visual prompt was provided.",
+  "Resposta de workbench invalida: visual_prompt vazio.": "Invalid workbench response: visual_prompt is empty.",
+  "IA nao conseguiu adaptar o prompt ao estilo natural-language configurado.": "AI could not adapt the prompt to the configured natural-language style.",
+  "IA nao conseguiu reparar o prompt visual em ingles.": "AI could not repair the visual prompt in English.",
+  "Resposta de traducao de roupa invalida.": "Invalid clothing translation response.",
+  "Resposta de reparo de prompt visual invalida.": "Invalid visual prompt repair response.",
+  "Prompt base de cenario ausente.": "Missing base background prompt.",
+  "Resposta de cenario invalida: visual_prompt vazio.": "Invalid background response: visual_prompt is empty.",
+  "Prompt de cenario ausente para reparo.": "Missing background prompt for repair.",
+  "Resposta de reparo de cenario invalida.": "Invalid background repair response.",
+  "Resposta de cena invalida: campos ausentes ou vazios: {}.": "Invalid scene response: missing or empty fields: {}.",
+  "Prompt de cenario vazio.": "Background prompt is empty.",
+  "A referencia \"{}\" nao existe nesta historia.": "Reference \"{}\" does not exist in this story.",
+  "A referencia \"{}\" nao corresponde a imagem selecionada.": "Reference \"{}\" does not match the selected image.",
+  "A imagem da referencia \"{}\" nao esta disponivel.": "The image for reference \"{}\" is not available.",
+  "A referencia de aparencia nao pertence a esta historia.": "The appearance reference does not belong to this story.",
+  "Configure o {} no estilo atual.": "Configure {} in the current style.",
+  "Prompt de alteracao de aparencia ausente.": "Missing appearance-change prompt.",
+  "Valor invalido para {}: {}": "Invalid value for {}: {}",
+  "Nao ha cena anterior para regenerar a cena atual.": "There is no previous scene to regenerate the current scene.",
+  "Nenhuma cena encontrada para regenerar.": "No scene found to regenerate.",
+  "A cena atual mudou antes da regeneracao terminar.": "The current scene changed before regeneration finished.",
+  "Ja existe uma referencia com esse nome nesta historia.": "A reference with this name already exists in this story.",
+  "Personagem nao encontrado.": "Character not found.",
+  "Endpoint nao encontrado.": "Endpoint not found.",
+  "Referencia nao encontrada.": "Reference not found.",
+  "Cena nao encontrada.": "Scene not found.",
+  "Aparencia nao encontrada.": "Appearance not found.",
+  "Memoria nao encontrada.": "Memory not found.",
+  "Lore nao encontrado.": "Lore not found.",
+  "Estilo nao encontrado.": "Style not found.",
+  "Imagem nao enviada.": "Image not sent.",
+  "Arquivo da referencia nao encontrado.": "Reference file not found.",
+  "Capa do estilo nao encontrada.": "Style cover not found.",
+  "Arquivo da capa nao encontrado.": "Style cover file not found.",
+  "Prompt de imagem do personagem vazio.": "Character image prompt is empty.",
+  "Prompts de expressao ausentes.": "Expression prompts are missing.",
+  "A imagem do novo cenario ainda nao esta pronta.": "The new background image is not ready yet.",
+  "Nao foi possivel salvar o cenario.": "Could not save the background.",
+  "Cenario nao encontrado.": "Background not found.",
+  "A nova imagem do cenario ainda nao esta pronta.": "The new background image is not ready yet.",
+  "O cenario selecionado ainda nao possui uma imagem valida.": "The selected background does not have a valid image yet.",
+  "Referencia adicional invalida para esta historia.": "Additional reference is invalid for this story.",
+  "Aparencia alvo nao encontrada.": "Target appearance not found.",
+  "A aparencia inicial nao pode ser substituida por esta funcao.": "The initial appearance cannot be replaced by this function.",
+  "Aparencia de referencia invalida.": "Invalid reference appearance.",
+  "Aparencia de referencia invalida ou ainda sem imagem local.": "Reference appearance is invalid or still has no local image.",
+  "A nova imagem ainda nao esta pronta.": "The new image is not ready yet.",
+  "Nao foi possivel substituir a aparencia.": "Could not replace the appearance.",
+  "A IA nao criou uma alteracao de aparencia para a referencia \"{}\".": "The AI did not create an appearance change for reference \"{}\".",
+  "A IA nao associou a referencia \"{}\" a uma nova aparencia.": "The AI did not associate reference \"{}\" with a new appearance.",
+  "Acao de aparencia invalida.": "Invalid appearance action.",
+  "Aparencia base nao encontrada.": "Base appearance not found.",
+  "Aparencia base ainda nao tem imagem local de referencia.": "Base appearance does not have a local reference image yet.",
+  "O ComfyUI falhou ao gerar a aparencia ({}).": "ComfyUI failed to generate the appearance ({}).",
+  "Tempo limite excedido ao aguardar a aparencia no ComfyUI ({}).": "Timed out waiting for the appearance on ComfyUI ({}).",
+  "Regeneracao individual de neutral nao esta habilitada.": "Individual neutral regeneration is not enabled.",
+  "Sprite base nao encontrado.": "Base sprite not found.",
+  "A aparencia selecionada nao possui um sprite neutro local para servir de referencia.": "The selected appearance does not have a local neutral sprite to use as reference.",
+  "Prompt de expressao ausente.": "Missing expression prompt.",
+  "Workflow de Alterar Expressoes nao configurado no estilo.": "Expression Change workflow is not configured in the style.",
+  "Nome do personagem vazio.": "Character name is empty.",
+  "A IA de narrativa nao retornou um nome para o personagem.": "The narrative AI did not return a character name.",
+  "Asset nao encontrado.": "Asset not found.",
+  "Acao de asset invalida.": "Invalid asset action.",
+  "Arquivo do asset ainda nao existe.": "Asset file does not exist yet.",
+  "Arquivo do asset nao encontrado.": "Asset file not found.",
+  "prompt_id ausente.": "Missing prompt_id.",
+  "Imagem ainda nao esta pronta.": "Image is not ready yet.",
+  "Arquivo nao encontrado.": "File not found.",
+  "Icone nao encontrado.": "Icon not found.",
   "Preset customizado salvo localmente.": "Custom preset saved locally.",
 };
 
 let normalizedEnglishTranslations = null;
+let normalizedEnglishTemplateTranslations = null;
 
 const spriteAlphaMaskCache = new Map();
 const SPRITE_ALPHA_HIT_THRESHOLD = 8;
@@ -675,6 +924,7 @@ function defaultCreateDraft(language = "pt-BR") {
     lore: "",
     starting_location: "",
     starting_message: "",
+    initial_choices: [],
     player_name: "",
     player_role: "",
     player_species: "",
@@ -818,12 +1068,40 @@ function t(key, vars = {}) {
 }
 
 function normalizeUiText(value) {
-  return repairMojibakeText(String(value || ""))
+  return decodeUiEntities(repairMojibakeText(String(value || "")))
     .replace(/\u00a0/g, " ")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function decodeUiEntities(value) {
+  const entities = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: "\"",
+    apos: "'",
+    nbsp: " ",
+    aacute: "a",
+    agrave: "a",
+    acirc: "a",
+    atilde: "a",
+    eacute: "e",
+    ecirc: "e",
+    iacute: "i",
+    oacute: "o",
+    ocirc: "o",
+    otilde: "o",
+    uacute: "u",
+    ccedil: "c",
+  };
+  return String(value || "").replace(/&(#(\d+)|#x([0-9a-f]+)|[a-z]+);/gi, (match, entity, decimal, hex) => {
+    if (decimal) return String.fromCodePoint(Number(decimal));
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    return entities[entity.toLowerCase()] ?? match;
+  });
 }
 
 function repairMojibakeText(value) {
@@ -834,6 +1112,10 @@ function repairMojibakeText(value) {
     ["Ã ", "à"], ["Â·", "·"],
   ];
   return replacements.reduce((text, [from, to]) => text.replaceAll(from, to), value);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function englishTranslationMap() {
@@ -848,6 +1130,37 @@ function englishTranslationMap() {
   return normalizedEnglishTranslations;
 }
 
+function englishTemplateTranslations() {
+  if (!normalizedEnglishTemplateTranslations) {
+    normalizedEnglishTemplateTranslations = Object.entries(UI_TRANSLATIONS_EN)
+      .filter(([key]) => key.includes("{}"))
+      .sort(([left], [right]) => normalizeUiText(right).length - normalizeUiText(left).length)
+      .map(([key, value]) => {
+        const marker = "\u0000";
+        const pattern = escapeRegExp(normalizeUiText(key).replaceAll("{}", marker)).replaceAll(marker, "(.+?)");
+        return {
+          regex: new RegExp(`^${pattern}$`, "i"),
+          value,
+        };
+      });
+  }
+  return normalizedEnglishTemplateTranslations;
+}
+
+function translateTemplateSystemString(normalized) {
+  for (const template of englishTemplateTranslations()) {
+    const match = normalized.match(template.regex);
+    if (!match) continue;
+    let index = 1;
+    return template.value.replace(/\{\}/g, () => {
+      const value = match[index++] || "";
+      const translated = translateSystemString(value);
+      return translated === value ? value : translated;
+    });
+  }
+  return "";
+}
+
 function translateSystemString(value) {
   if (currentSystemLanguage() !== "en") return value;
   const original = String(value ?? "");
@@ -856,6 +1169,8 @@ function translateSystemString(value) {
   const translations = englishTranslationMap();
   if (translations[normalized]) return translations[normalized];
   if (translations[normalized.toLowerCase()]) return translations[normalized.toLowerCase()];
+  const templateTranslated = translateTemplateSystemString(normalized);
+  if (templateTranslated) return templateTranslated;
   const sceneMatch = normalized.match(/^Cena\s+(\d+):\s*(.*)$/i);
   if (sceneMatch) return `Scene ${sceneMatch[1]}:${sceneMatch[2] ? ` ${sceneMatch[2]}` : ""}`;
   const characterCountMatch = normalized.match(/^(\d+)\s+personagem\(ns\)$/i);
@@ -864,8 +1179,28 @@ function translateSystemString(value) {
   if (sceneCountMatch) return `${sceneCountMatch[1]} scenes`;
   const minCharactersMatch = normalized.match(/^(\d+)\/(\d+)\s+caracteres minimos$/i);
   if (minCharactersMatch) return `${minCharactersMatch[1]}/${minCharactersMatch[2]} minimum characters`;
+  const fieldCountMatch = normalized.match(/^(\d+)\/(\d+)\s+campos$/i);
+  if (fieldCountMatch) return `${fieldCountMatch[1]}/${fieldCountMatch[2]} fields`;
   const nextLineMatch = normalized.match(/^Proxima fala:\s*(.*)$/i);
   if (nextLineMatch) return `Next line: ${nextLineMatch[1]}`;
+  const errorPrefixes = [
+    ["IA de geracao de historia falhou ao enriquecer personagens: ", "Story-generation AI failed while enriching characters: "],
+    ["IA de geracao de historia falhou: ", "Story-generation AI failed: "],
+    ["Nao foi possivel gerar os prompts de expressao: ", "Could not generate expression prompts: "],
+    ["IA de narrativa falhou ao criar personagem: ", "Narrative AI failed to create the character: "],
+    ["IA de narrativa falhou ao regenerar resumo do personagem: ", "Narrative AI failed to regenerate the character summary: "],
+    ["IA de melhoria de texto falhou: ", "Text-improvement AI failed: "],
+    ["IA de prompt visual falhou: ", "Visual-prompt AI failed: "],
+    ["IA de reparo de estilo do prompt visual falhou: ", "Visual-prompt style repair AI failed: "],
+    ["IA de traducao de roupa falhou: ", "Clothing-translation AI failed: "],
+    ["IA de reparo de prompt visual falhou: ", "Visual-prompt repair AI failed: "],
+    ["IA de cenario falhou: ", "Background AI failed: "],
+    ["IA de reparo de cenario falhou: ", "Background repair AI failed: "],
+    ["IA de narrativa falhou: ", "Narrative AI failed: "],
+  ];
+  for (const [source, target] of errorPrefixes) {
+    if (normalized.startsWith(source)) return `${target}${translateSystemString(normalized.slice(source.length))}`;
+  }
   if (normalized.startsWith("Ouvir ") && normalized.endsWith(" agora")) {
     return `Hear ${normalized.slice(6, -6)} now`;
   }
@@ -899,6 +1234,10 @@ function translateSystemString(value) {
     return `Detected workbenches: ${detail}`;
   }
   const statusPrefixes = [
+    ["Adicionando ", "Adding "],
+    ["Atualizando ", "Updating "],
+    ["Arquivando ", "Archiving "],
+    ["Duplicando ", "Duplicating "],
     ["Gerando ", "Generating "],
     ["Regerando ", "Regenerating "],
     ["Enviando ", "Sending "],
@@ -906,8 +1245,12 @@ function translateSystemString(value) {
     ["Criando ", "Creating "],
     ["Deletando ", "Deleting "],
     ["Excluindo ", "Deleting "],
+    ["Parando ", "Stopping "],
+    ["Registrando ", "Registering "],
+    ["Restaurando ", "Restoring "],
     ["Selecionando ", "Selecting "],
     ["Preparando ", "Preparing "],
+    ["Testando ", "Testing "],
     ["Ativando ", "Activating "],
   ];
   for (const [source, target] of statusPrefixes) {
@@ -1000,7 +1343,7 @@ async function loadVisualStyles() {
 
 function setBusy(value, status = "") {
   state.busy = value;
-  state.status = status;
+  state.status = translateSystemString(status);
   render();
 }
 
@@ -1058,10 +1401,10 @@ function showAppMessageDialog(options = {}) {
   state.messageDialog = {
     type: options.type || "alert",
     variant: options.variant || "info",
-    title: options.title || "",
-    message: String(options.message || ""),
-    confirmLabel: options.confirmLabel || "OK",
-    cancelLabel: options.cancelLabel || "Cancelar",
+    title: translateSystemString(options.title || ""),
+    message: translateSystemString(String(options.message || "")),
+    confirmLabel: translateSystemString(options.confirmLabel || "OK"),
+    cancelLabel: translateSystemString(options.cancelLabel || "Cancelar"),
     kicker: options.kicker || "TaleWeaver",
   };
   render();
@@ -2247,13 +2590,20 @@ function renderQuickCreateCard() {
   `;
 }
 
+function storyStatusLabel(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "archived") return currentSystemLanguage() === "en" ? "Archived" : "Arquivada";
+  if (normalized === "active") return currentSystemLanguage() === "en" ? "Active" : "Ativa";
+  return status || "";
+}
+
 function renderStoryCard(story) {
   const archived = story.status === "archived";
   return `
     <article class="story-card library-story-card">
       <div class="story-cover">
         <img src="${escapeAttr(story.cover_url || "/assets/placeholder-bg.svg")}" alt="">
-        <span>${escapeHtml(story.status)}</span>
+        <span>${escapeHtml(storyStatusLabel(story.status))}</span>
       </div>
       <div class="story-body">
         <h2>${escapeHtml(story.title)}</h2>
@@ -2366,9 +2716,9 @@ function renderCreateStoryDetails(draft) {
 function participationButton(mode, current) {
   return `
     <button type="button" class="participation-card ${current === mode.value ? "active" : ""}" data-action="select-pov" data-value="${mode.value}">
-      <span>${escapeHtml(mode.title)}</span>
-      <strong>${escapeHtml(mode.short)}</strong>
-      <small>${escapeHtml(mode.description)}</small>
+      <span>${escapeHtml(translateSystemString(mode.title))}</span>
+      <strong>${escapeHtml(translateSystemString(mode.short))}</strong>
+      <small>${escapeHtml(translateSystemString(mode.description))}</small>
     </button>
   `;
 }
@@ -2395,12 +2745,12 @@ function renderCreateCharacters(draft) {
         <div class="character-editor-head">
           <div class="character-avatar">${escapeHtml((draft.player_name || "J").slice(0, 1).toUpperCase())}</div>
           <div>
-            <span class="eyebrow">${escapeHtml(playerCopy.eyebrow)}</span>
-            <h2>${escapeHtml(draft.player_name || playerCopy.fallbackName)}</h2>
+            <span class="eyebrow">${escapeHtml(translateSystemString(playerCopy.eyebrow))}</span>
+            <h2>${escapeHtml(draft.player_name || translateSystemString(playerCopy.fallbackName))}</h2>
           </div>
           <span class="field-count">${playerFilled}/11 campos</span>
         </div>
-        <p class="small-text participation-note">${escapeHtml(playerCopy.note)}</p>
+        <p class="small-text participation-note">${escapeHtml(translateSystemString(playerCopy.note))}</p>
         <div class="form-grid">
           ${draftField("player_name", "Nome", "text", "Ari", draft.player_name)}
           ${draftField("player_role", "Papel na história", "text", "aprendiz exilado", draft.player_role)}
@@ -2593,7 +2943,7 @@ function renderPlay() {
           title="Modo de Edicao"
           aria-label="Modo de Edicao"
         >
-          <img src="/icons/edit.webp" alt="" aria-hidden="true">
+          <img src="/icons/file-edit.png" alt="" aria-hidden="true">
           <span>Modo de Edicao</span>
         </button>
         <div class="vn-menu-items" role="menu" aria-label="Acoes da historia">
@@ -3715,12 +4065,14 @@ function renderAppearanceCard(character, appearance, options = {}) {
   const selected = options.selectedAppearanceId === appearance.id;
   const initial = isInitialAppearance(character.id, appearance);
   const selectAction = options.selectAction || "set-active-appearance";
+  const label = appearanceMetadataLabel(appearance);
+  const keywords = appearanceKeywordsText(appearance);
   return `
     <figure class="appearance-card ${active ? "active" : ""} ${selected ? "selected" : ""}">
       ${options.showRegenerate && !initial ? `
         <button
           type="button"
-          class="appearance-regenerate-button"
+          class="appearance-regenerate-button appearance-icon-button"
           data-action="open-appearance-regenerate"
           data-character-id="${escapeAttr(character.id)}"
           data-appearance-id="${escapeAttr(appearance.id)}"
@@ -3732,18 +4084,112 @@ function renderAppearanceCard(character, appearance, options = {}) {
       ` : ""}
       <button
         type="button"
+        class="appearance-edit-button appearance-icon-button"
+        data-action="open-appearance-metadata"
+        data-character-id="${escapeAttr(character.id)}"
+        data-appearance-id="${escapeAttr(appearance.id)}"
+        title="Editar metadados"
+        aria-label="Editar metadados"
+      >
+        <img src="/icons/file-edit.png" alt="" aria-hidden="true">
+      </button>
+      <button
+        type="button"
+        class="appearance-delete-button appearance-icon-button danger"
+        data-action="delete-appearance"
+        data-character-id="${escapeAttr(character.id)}"
+        data-appearance-id="${escapeAttr(appearance.id)}"
+        ${active ? "disabled" : ""}
+        title="${active ? "A aparencia ativa nao pode ser excluida" : "Excluir aparencia"}"
+        aria-label="Excluir aparencia"
+      >
+        <img src="/icons/trash.png" alt="" aria-hidden="true">
+      </button>
+      <button
+        type="button"
         class="appearance-card-select"
         data-action="${escapeAttr(selectAction)}"
         data-character-id="${escapeAttr(character.id)}"
         data-appearance-id="${escapeAttr(appearance.id)}"
       >
-        <img src="${escapeAttr(sprite.url)}" alt="${escapeAttr(appearance.label || "Aparencia")}">
-        <span>${escapeHtml(appearance.label || "Aparencia")}</span>
+        <img src="${escapeAttr(sprite.url)}" alt="${escapeAttr(label || "Aparencia")}">
+        <span>${escapeHtml(label || "Aparencia")}</span>
+        ${appearance.match_summary ? `<small title="${escapeAttr(appearance.match_summary)}">${escapeHtml(appearance.match_summary)}</small>` : ""}
+        ${keywords ? `<small title="${escapeAttr(keywords)}">${escapeHtml(keywords)}</small>` : ""}
         ${active ? `<small>Ativa</small>` : ""}
         ${selected ? `<small>Referencia</small>` : ""}
       </button>
     </figure>
   `;
+}
+
+function renderAppearanceMetadataModal() {
+  const modal = state.modal || {};
+  const character = findCharacterById(modal.characterId);
+  const appearance = getCharacterAppearances(modal.characterId).find(item => item.id === modal.appearanceId);
+  if (!character || !appearance) return "";
+  const draft = modal.draft || appearanceMetadataDraft(appearance);
+  return `
+    <div class="modal-backdrop">
+      <form class="modal appearance-metadata-modal" id="appearance-metadata-form" data-character-id="${escapeAttr(character.id)}" data-appearance-id="${escapeAttr(appearance.id)}">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">${escapeHtml(character.name || "Personagem")}</span>
+            <h2>Metadados da aparencia</h2>
+          </div>
+          <button type="button" class="icon-close" data-action="close-modal" aria-label="Fechar">X</button>
+        </div>
+        <div class="form-grid">
+          <div class="field full">
+            <label for="appearance-match-label">Label</label>
+            <input id="appearance-match-label" name="match_label" type="text" value="${escapeAttr(draft.match_label || "")}" placeholder="${escapeAttr(appearance.label || "Aparencia")}">
+          </div>
+          <div class="field full">
+            <label for="appearance-match-summary">Resumo</label>
+            <textarea id="appearance-match-summary" name="match_summary" rows="4">${escapeHtml(draft.match_summary || "")}</textarea>
+          </div>
+          <div class="field full">
+            <label for="appearance-match-keywords">Tags / Palavras-chave</label>
+            <textarea id="appearance-match-keywords" name="match_keywords" rows="3" placeholder="tag 1, tag 2">${escapeHtml((draft.match_keywords || []).join(", "))}</textarea>
+          </div>
+        </div>
+        <div class="mini-actions">
+          <button type="button" data-action="close-modal">Cancelar</button>
+          <button class="primary" type="submit">Salvar</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function appearanceMetadataDraft(appearance) {
+  return {
+    match_label: appearanceMetadataLabel(appearance),
+    match_summary: String(appearance?.match_summary || "").trim(),
+    match_keywords: Array.isArray(appearance?.match_keywords) ? appearance.match_keywords : [],
+  };
+}
+
+function appearanceMetadataLabel(appearance) {
+  return String(appearance?.match_label || appearance?.label || "").trim();
+}
+
+function appearanceKeywordsText(appearance) {
+  const keywords = Array.isArray(appearance?.match_keywords) ? appearance.match_keywords : [];
+  return keywords.map(item => String(item || "").trim()).filter(Boolean).join(", ");
+}
+
+function parseAppearanceKeywords(value) {
+  const seen = new Set();
+  return String(value || "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(item => {
+      const key = normalizeName(item);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function renderCharacterDetail(character) {
@@ -4135,7 +4581,7 @@ function renderExpressionsModal() {
                     title="${editingExpression === expression ? "Salvar prompt" : "Editar prompt"}"
                     aria-label="${editingExpression === expression ? "Salvar prompt" : "Editar prompt"} de ${escapeAttr(label)}"
                   >
-                    <img src="/icons/${editingExpression === expression ? "save.webp" : "edit.webp"}" alt="" aria-hidden="true">
+                    <img src="/icons/${editingExpression === expression ? "save.webp" : "file-edit.png"}" alt="" aria-hidden="true">
                   </button>
                 </div>
               </figure>
@@ -4335,7 +4781,7 @@ function renderStoryReferencesModal() {
                 </button>
                 <div class="story-reference-name-row">
                   <button type="button" class="reference-name-action" data-action="${state.referenceEditingId === reference.id ? "save-reference-name" : "edit-reference-name"}" data-reference-id="${escapeAttr(reference.id)}" title="${state.referenceEditingId === reference.id ? "Salvar nome" : "Renomear referência"}">
-                    <img src="/icons/${state.referenceEditingId === reference.id ? "save.webp" : "edit.webp"}" alt="">
+                    <img src="/icons/${state.referenceEditingId === reference.id ? "save.webp" : "file-edit.png"}" alt="">
                   </button>
                   ${state.referenceEditingId === reference.id
                     ? `<input class="story-reference-name-input" data-reference-name-input="${escapeAttr(reference.id)}" value="${escapeAttr(reference.label || "")}" maxlength="80">`
@@ -4561,6 +5007,9 @@ function renderModal() {
   }
   if (state.modal.type === "appearanceRegenerate") {
     return renderAppearanceRegenerateModal();
+  }
+  if (state.modal.type === "appearanceMetadata") {
+    return renderAppearanceMetadataModal();
   }
   if (state.modal.type === "backgroundRegenerate") {
     const scene = latestScene(state.activeStory);
@@ -4893,6 +5342,8 @@ function bindEvents() {
   if (appearanceDesignerForm) appearanceDesignerForm.addEventListener("submit", generateCharacterAppearance);
   const appearanceRegenerateForm = document.getElementById("appearance-regenerate-form");
   if (appearanceRegenerateForm) appearanceRegenerateForm.addEventListener("submit", regenerateExistingAppearance);
+  const appearanceMetadataForm = document.getElementById("appearance-metadata-form");
+  if (appearanceMetadataForm) appearanceMetadataForm.addEventListener("submit", saveAppearanceMetadata);
   const storyReferenceUpload = document.getElementById("story-reference-upload");
   if (storyReferenceUpload) storyReferenceUpload.addEventListener("change", uploadStoryReference);
   document.querySelectorAll("[data-reference-name-input]").forEach(input => {
@@ -5234,6 +5685,14 @@ async function handleAction(event) {
     event.stopPropagation();
     openAppearanceRegenerateModal(event.currentTarget.dataset.characterId || "", event.currentTarget.dataset.appearanceId || "");
   }
+  if (action === "open-appearance-metadata") {
+    event.stopPropagation();
+    openAppearanceMetadataModal(event.currentTarget.dataset.characterId || "", event.currentTarget.dataset.appearanceId || "");
+  }
+  if (action === "delete-appearance") {
+    event.stopPropagation();
+    deleteAppearance(event.currentTarget.dataset.characterId || "", event.currentTarget.dataset.appearanceId || "");
+  }
   if (action === "select-regenerate-reference") {
     event.stopPropagation();
     selectRegenerateReference(event.currentTarget.dataset.appearanceId || "");
@@ -5339,7 +5798,7 @@ async function stopApp() {
   setBusy(true, "Parando app...");
   try {
     await api("/api/app/shutdown", { method: "POST", body: JSON.stringify({}) });
-    state.status = "App parado. Pode fechar esta aba.";
+    state.status = translateSystemString("App parado. Pode fechar esta aba.");
     render();
   } catch (error) {
     alert(error.message);
@@ -6000,6 +6459,7 @@ async function generateStorySeed(options = {}) {
       lore: seed.lore || state.createDraft.lore,
       starting_location: seed.starting_location || state.createDraft.starting_location,
       starting_message: seed.starting_message || state.createDraft.starting_message,
+      initial_choices: Array.isArray(seed.initial_choices) ? seed.initial_choices : state.createDraft.initial_choices,
       player_name: seed.player_character?.name || state.createDraft.player_name,
       player_role: seed.player_character?.role || state.createDraft.player_role,
       player_species: seed.player_character?.species || state.createDraft.player_species,
@@ -6043,7 +6503,7 @@ async function improveField(button) {
 
   const previousLabel = button.textContent;
   button.disabled = true;
-  button.textContent = "Melhorando...";
+  button.textContent = translateSystemString("Melhorando...");
   try {
     const result = await api("/api/ai/improve", {
       method: "POST",
@@ -6109,6 +6569,7 @@ async function createStory(event) {
     language: draft.language || "pt-BR",
     starting_location: draft.starting_location,
     starting_message: draft.starting_message,
+    initial_choices: Array.isArray(draft.initial_choices) ? draft.initial_choices : [],
     story_prompt: draft.story_prompt,
     lore: loreParts.join("\n\n"),
     player_character: {
@@ -6438,7 +6899,7 @@ async function ensureStoryExpressionPrompts() {
   if (!story || story.visual_style_record?.expressions_enabled !== true) return story;
   const missing = (story.characters || []).filter(character => isVisualCharacter(character, story) && !characterExpressionPromptsComplete(character));
   if (!missing.length) return story;
-  state.status = "Gerando prompts de expressao dos personagens...";
+  state.status = translateSystemString("Gerando prompts de expressao dos personagens...");
   render();
   await api(`/api/stories/${story.id}/expression-prompts`, { method: "POST", body: JSON.stringify({}) });
   await loadStory(story.id);
@@ -7387,6 +7848,70 @@ async function setActiveAppearance(characterId, appearanceId) {
   }
 }
 
+function openAppearanceMetadataModal(characterId, appearanceId) {
+  const appearance = getCharacterAppearances(characterId).find(item => item.id === appearanceId);
+  if (!appearance) return;
+  state.modal = {
+    type: "appearanceMetadata",
+    characterId,
+    appearanceId,
+    draft: appearanceMetadataDraft(appearance),
+  };
+  render();
+}
+
+async function saveAppearanceMetadata(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const characterId = form.dataset.characterId || "";
+  const appearanceId = form.dataset.appearanceId || "";
+  if (!characterId || !appearanceId) return;
+  const data = new FormData(form);
+  const payload = {
+    match_label: String(data.get("match_label") || "").trim(),
+    match_summary: String(data.get("match_summary") || "").trim(),
+    match_keywords: parseAppearanceKeywords(data.get("match_keywords")),
+  };
+  setBusy(true, "Salvando aparencia...");
+  try {
+    state.activeStory = await api(`/api/characters/${characterId}/appearances/${appearanceId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.modal = null;
+    render();
+  } catch (error) {
+    await appAlert(error.message, { variant: "error" });
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteAppearance(characterId, appearanceId) {
+  if (!characterId || !appearanceId) return;
+  const character = findCharacterById(characterId);
+  const appearance = getCharacterAppearances(characterId).find(item => item.id === appearanceId);
+  if (!appearance) return;
+  if (isAppearanceActive(character, appearance)) {
+    await appAlert("A aparencia ativa nao pode ser excluida. Ative outra aparencia antes de excluir esta.", { variant: "warning" });
+    return;
+  }
+  const confirmed = await appConfirm("Excluir esta aparencia? Os sprites associados tambem serao removidos.", {
+    title: "Excluir aparencia",
+    confirmLabel: "Excluir",
+  });
+  if (!confirmed) return;
+  setBusy(true, "Excluindo aparencia...");
+  try {
+    state.activeStory = await api(`/api/characters/${characterId}/appearances/${appearanceId}`, { method: "DELETE" });
+    render();
+  } catch (error) {
+    await appAlert(error.message, { variant: "error" });
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function generateCharacterAppearance(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -7590,7 +8115,7 @@ async function generateInitialStoryAssets() {
   const scene = latestScene(story);
   if (!story || !scene) return;
 
-  state.status = "Gerando imagens iniciais...";
+  state.status = translateSystemString("Gerando imagens iniciais...");
   render();
   const background = findSceneBackground(scene);
   if (!background?.url && scene.background_prompt) {
@@ -7619,7 +8144,7 @@ async function ensureInitialCharacterSprites(label = "Gerando sprites iniciais..
     if (!isVisualCharacter(character, story)) continue;
     if (!(character.visual_prompt || "").trim() || getCharacterAppearances(character.id).length) continue;
     const onScreen = (scene?.characters_on_screen || []).find(item => normalizeName(item.name) === normalizeName(character.name));
-    state.status = `${label} ${character.name}`;
+    state.status = `${translateSystemString(label)} ${character.name}`;
     render();
     const result = await api(`/api/stories/${story.id}/generate-image`, {
       method: "POST",
@@ -7650,7 +8175,7 @@ async function ensureSceneSprites(label = "Gerando sprites da cena...") {
     if (!character || !isVisualCharacter(character, story) || findCharacterSprite(item.name, item.expression)?.url) continue;
     if (!(character.visual_prompt || "").trim()) continue;
 
-    state.status = `${label} ${character.name}`;
+    state.status = `${translateSystemString(label)} ${character.name}`;
     render();
     const result = await api(`/api/stories/${story.id}/generate-image`, {
       method: "POST",
@@ -7807,7 +8332,7 @@ async function regenerateSelectedExpressions() {
         normalizeExpression(item.expression) === "neutral"
       ));
       if (!referenceAsset) throw new Error(`Imagem de referencia ausente para ${label}.`);
-      state.status = `Regenerando ${label} (${index + 1}/${selected.length})...`;
+      state.status = translateSystemString(`Regenerando ${label} (${index + 1}/${selected.length})...`);
       render();
       const result = await api(`/api/assets/${referenceAsset.id}/expressions/${expression}/regenerate`, {
         method: "POST",
@@ -7908,7 +8433,7 @@ async function waitForAsset(assetId, label) {
   const startedAt = Date.now();
   while (true) {
     const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-    state.status = `${label} ${elapsedSeconds}s`;
+    state.status = `${translateSystemString(label)} ${elapsedSeconds}s`;
     render();
     await sleep(pollIntervalMs);
     const result = await api(`/api/assets/${assetId}/result`);
@@ -7989,12 +8514,42 @@ function findStoryCharacter(name) {
   const key = normalizeName(name);
   if (!key) return null;
   return (state.activeStory?.characters || []).find(item => {
-    const names = [
-      item.name,
-      ...String(item.aliases || "").split(",").map(alias => alias.trim()),
-    ];
+    const names = characterNameVariants(item);
     return names.some(value => normalizeName(value) === key);
   });
+}
+
+function findCharacterById(characterId) {
+  return (state.activeStory?.characters || []).find(item => item.id === characterId) || null;
+}
+
+function characterNameVariants(character) {
+  const variants = new Set();
+  const add = value => {
+    const text = String(value || "").trim();
+    if (text) variants.add(text);
+  };
+  const name = String(character?.name || "").trim();
+  add(name);
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length) {
+    add(parts[0]);
+    add(parts[parts.length - 1]);
+  }
+  if (parts.length >= 2) add(parts.slice(0, 2).join(" "));
+  String(character?.aliases || "")
+    .split(/[,;/|]/)
+    .map(alias => alias.trim())
+    .filter(Boolean)
+    .forEach(alias => {
+      add(alias);
+      const aliasParts = alias.split(/\s+/).filter(Boolean);
+      if (aliasParts.length) {
+        add(aliasParts[0]);
+        add(aliasParts[aliasParts.length - 1]);
+      }
+    });
+  return [...variants];
 }
 
 function newCharacterCandidateForName(scene, name) {

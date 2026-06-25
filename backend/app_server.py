@@ -331,6 +331,18 @@ class AppHandler(BaseHTTPRequestHandler):
                         story_id=character.get("story_id"),
                     )
                 return self.send_json(character)
+            if len(parts) == 5 and parts[:2] == ["api", "characters"] and parts[3] == "appearances":
+                story = db.update_character_appearance_metadata(parts[2], parts[4], payload)
+                if not story:
+                    return self.send_error_json(404, "Aparencia nao encontrada.")
+                db.add_api_log(
+                    "local",
+                    "appearance:metadata-updated",
+                    {"character_id": parts[2], "appearance_id": parts[4]},
+                    {"updated": True},
+                    story_id=story.get("id"),
+                )
+                return self.send_json(story)
             if len(parts) == 6 and parts[:2] == ["api", "characters"] and parts[3] == "appearances" and parts[5] == "activate":
                 story = db.set_active_appearance(parts[2], parts[4])
                 if not story:
@@ -368,6 +380,20 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.delete_asset(parts[2])
             if len(parts) == 3 and parts[:2] == ["api", "story-references"]:
                 return self.delete_story_reference(parts[2])
+            if len(parts) == 5 and parts[:2] == ["api", "characters"] and parts[3] == "appearances":
+                story, reason = db.delete_character_appearance(parts[2], parts[4])
+                if reason == "active":
+                    return self.send_error_json(400, "A aparencia ativa nao pode ser excluida. Ative outra aparencia antes de excluir esta.")
+                if not story:
+                    return self.send_error_json(404, "Aparencia nao encontrada.")
+                db.add_api_log(
+                    "local",
+                    "appearance:deleted",
+                    {"character_id": parts[2], "appearance_id": parts[4]},
+                    {"deleted": True},
+                    story_id=story.get("id"),
+                )
+                return self.send_json(story)
             if len(parts) == 3 and parts[:2] == ["api", "characters"]:
                 return self.delete_character(parts[2])
             if len(parts) == 3 and parts[:2] == ["api", "memory"]:
@@ -1062,6 +1088,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 asset_id,
                 asset_id,
                 active=True,
+                match_label=compact_label(source_prompt),
+                match_summary=source_prompt,
+                match_keywords=[],
             )
             service_manager.attach_comfy_generation(comfy_token, asset_id=asset_id, prompt_id=result.get("prompt_id", ""))
             comfy_token = None
@@ -1588,6 +1617,9 @@ class AppHandler(BaseHTTPRequestHandler):
                         "prompt_profile_example": (prompt_profile or {}).get("example") or "",
                         "reason": update.get("reason") or "",
                         "new_appearance_summary": update.get("new_appearance_summary") or "",
+                        "match_label": update.get("match_label") or "",
+                        "match_summary": update.get("match_summary") or "",
+                        "match_keywords": update.get("match_keywords") or [],
                         **result,
                     },
                 },
@@ -1599,6 +1631,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 asset_id,
                 asset_id,
                 active=bool(update.get("activate_after_generation", True)),
+                match_label=update.get("match_label") or update.get("new_appearance_name") or "",
+                match_summary=update.get("match_summary") or update.get("new_appearance_summary") or "",
+                match_keywords=update.get("match_keywords") or [],
             )
             service_manager.attach_comfy_generation(comfy_token, asset_id=asset_id, prompt_id=result.get("prompt_id", ""))
             comfy_token = None
@@ -2820,8 +2855,12 @@ def find_character_appearance_for_update(story, character, appearance_id_or_labe
         return next((item for item in appearances if item.get("id") == active_id or item.get("is_active")), None) or appearances[0]
     normalized_target = normalize_lookup_text(target)
     for appearance in appearances:
-        if appearance.get("id") == target:
+        appearance_id = str(appearance.get("id") or "")
+        if appearance_id == target or (target and appearance_id.endswith(target)):
             return appearance
+    close_match = close_appearance_id_match(appearances, target)
+    if close_match:
+        return close_match
     for appearance in appearances:
         if normalize_lookup_text(appearance.get("label")) == normalized_target:
             return appearance
@@ -2831,6 +2870,51 @@ def find_character_appearance_for_update(story, character, appearance_id_or_labe
             if label in {"default", "initial", "inicial"}:
                 return appearance
     return None
+
+
+def close_appearance_id_match(appearances, target):
+    normalized_target = normalize_appearance_id_text(target)
+    if len(normalized_target) < 16:
+        return None
+    matches = []
+    for appearance in appearances:
+        appearance_id = str(appearance.get("id") or "")
+        normalized_id = normalize_appearance_id_text(appearance_id)
+        if not normalized_id:
+            continue
+        id_tail = normalized_id.removeprefix("appearance")
+        target_tail = normalized_target.removeprefix("appearance")
+        if one_edit_apart(normalized_id, normalized_target) or (
+            len(target_tail) >= 10 and one_edit_apart(id_tail, target_tail)
+        ):
+            matches.append(appearance)
+    return matches[0] if len(matches) == 1 else None
+
+
+def normalize_appearance_id_text(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def one_edit_apart(left, right):
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        return sum(1 for a, b in zip(left, right) if a != b) == 1
+    if len(left) < len(right):
+        left, right = right, left
+    i = j = edits = 0
+    while i < len(left) and j < len(right):
+        if left[i] == right[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        i += 1
+    return True
 
 
 def appearance_update_change_prompt(update):

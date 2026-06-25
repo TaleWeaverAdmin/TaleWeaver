@@ -126,6 +126,7 @@ Avoid generic archetypes unless they have a specific twist.
 Do not automatically create a love interest, mentor, childhood friend, chosen-one helper, or evil priest unless the story clearly needs it.
 Characters must have their own goals, fears, secrets, and reasons to oppose or help the protagonist.
 The starting_message must be an opening scene in the requested language, not a welcome/tutorial message.
+Create exactly 3 initial_choices that continue directly from starting_message. They must be specific to the opening scene, not generic fallback actions.
 Narrative fields must be written in the requested narrative language.
 visual_prompt fields must be in English and must describe only that specific character, not other characters beside them.
 
@@ -146,6 +147,7 @@ Required JSON format:
 "lore": "rich world description with history, rules, current crisis, factions, mysteries, and long-term conflict",
 "starting_location": "short starting location",
 "starting_message": "opening scene in the requested narrative language",
+"initial_choices": ["three specific continuation choices for the opening scene, in the requested narrative language"],
 "player_character": {
 "name": "protagonist name or Jogador/Player",
 "role": "role",
@@ -220,6 +222,7 @@ Required JSON:
 "lore":"compact but rich world setup, 6 to 10 sentences",
 "starting_location":"short starting location",
 "starting_message":"opening VN scene, 4 to 7 sentences",
+"initial_choices":["specific opening-scene choice 1","specific opening-scene choice 2","specific opening-scene choice 3"],
 "player_character":{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","appearance":"appearance","physical":"physical appearance","personality":"personality","clothing":"specific clothing","background":"background","goals":"goals and fears","ai_role_summary":"short role summary","ai_personality_summary":"short personality summary","ai_voice_summary":"short voice summary","ai_prompt_brief":"Name | Role: ... Personality: ... Voice: ...","visual_prompt":"English sprite prompt"},
 "characters":[{"name":"name","role":"role","species":"species","gender":"gender","character_type":"type","aliases":"aliases","description":"description","physical":"appearance","personality":"personality","clothing":"specific clothing","relationship":"relationship and tension","secret_or_conflict":"secret or conflict","ai_role_summary":"short role summary","ai_personality_summary":"short personality summary","ai_voice_summary":"short voice summary","ai_prompt_brief":"Name | Role: ... Personality: ... Voice: ...","visual_prompt":"English sprite prompt"}]
 }
@@ -228,6 +231,7 @@ Rules:
 - Preserve the user's idea.
 - Create exactly 2 initial characters.
 - Narrative text must use the requested language.
+- Create exactly 3 initial_choices that continue directly from starting_message and are not generic fallback actions.
 - Respect the requested participation mode in starting_message and player_character.
 - For narrator or third_person mode, starting_message must be external third-person/cinematic narration, not "I/my/we/you/your" narration.
 - For first_person mode, starting_message may be immersive first-person narration.
@@ -518,6 +522,7 @@ def normalize_story_seed(raw, prompt, participation_mode=None):
         "lore": clean(raw.get("lore")),
         "starting_location": clean(raw.get("starting_location")),
         "starting_message": starting_message,
+        "initial_choices": normalize_choices(raw.get("initial_choices") or raw.get("choices"))[:3],
         "player_character": {
             "name": clean(player.get("name")),
             "role": clean(player.get("role")),
@@ -3447,8 +3452,7 @@ def registered_visual_character_lookup(story, invisible_keys=None):
     for character in (story or {}).get("characters") or []:
         if not isinstance(character, dict) or not character.get("id") or character.get("id") not in sprite_character_ids:
             continue
-        keys = [normalize_person_key(character.get("name"))]
-        keys.extend(normalize_person_key(alias) for alias in str(character.get("aliases") or "").split(","))
+        keys = [normalize_person_key(alias) for alias in character_name_variants(character)]
         for key in keys:
             if key and key not in invisible_keys:
                 lookup[key] = character
@@ -3845,6 +3849,9 @@ def normalize_appearance_updates(value, aliases=None):
                     "based_on_appearance_id": clean(first_present(item, "based_on_appearance_id", "base_appearance_id", "source_appearance_id")),
                     "new_appearance_name": clean(first_present(item, "new_appearance_name", "appearance_name", "label")),
                     "new_appearance_summary": clean(first_present(item, "new_appearance_summary", "summary", "description")),
+                    "match_label": clean(first_present(item, "match_label", "matching_label")),
+                    "match_summary": clean(first_present(item, "match_summary", "matching_summary")),
+                    "match_keywords": normalize_appearance_match_keywords(first_present_value(item, "match_keywords", "keywords", "tags")),
                     "change_prompt": clean(first_present(item, "change_prompt", "prompt", "visual_prompt")),
                     "reference_name": clean(first_present(item, "reference_name", "reference", "visual_reference")),
                 }
@@ -3853,6 +3860,22 @@ def normalize_appearance_updates(value, aliases=None):
             update["target_appearance_id"] = clean(first_present(item, "target_appearance_id", "appearance_id", "target_id"))
         result.append(update)
     return result
+
+
+def normalize_appearance_match_keywords(value):
+    if isinstance(value, str):
+        value = [item.strip() for item in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    keywords = []
+    seen = set()
+    for item in value:
+        text = clean(item)
+        key = normalize_person_key(text)
+        if text and key not in seen:
+            keywords.append(text[:80])
+            seen.add(key)
+    return keywords[:12]
 
 
 def normalize_bool(value, default=False):

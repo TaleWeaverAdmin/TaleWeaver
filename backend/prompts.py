@@ -127,6 +127,8 @@ Appearance update rules:
 - appearance_updates is mandatory.
 - Follow APPEARANCE UPDATE RULES from the user prompt. Use updates only for persistent sprite appearance changes, never for emotion, expression, pose, lighting, or temporary action.
 - For create_new, keep the fields separate: new_appearance_summary summarizes the resulting appearance, reason explains why the update is needed, and change_prompt is only the direct technical instruction sent to ComfyUI.
+- For create_new, include match_label, match_summary, and match_keywords in the story language so future player requests can match this persistent visual state.
+- Use switch_existing/revert_existing when the requested persistent visual state matches an existing appearance label, summary, or keyword from CHARACTER VISUAL STATE. Use create_new only when none matches.
 - change_prompt must be a short English list of concrete visual changes, written as direct comma-separated commands or tags rather than narrative prose.
 - change_prompt must contain only the visual delta. Do not include the character name, pronouns, identity traits that stay unchanged, story context, causes, emotions, personality, mood, symbolism, justification, or preservation instructions.
 - Do not embellish change_prompt with inferred effects that were not explicitly established as persistent visual changes.
@@ -802,9 +804,11 @@ def build_character_visual_state(story, selected_characters, current_scene):
         active = active_character_appearance(character, character_appearances)
         visible = on_screen.get(key) or {}
         entry_lines = [
-            f"{name}:",
-            f"Active appearance: {(active or {}).get('id') or character.get('active_appearance_id') or 'none'}",
-            "Available appearances:",
+            f"{name}",
+            f"current: {(active or {}).get('id') or character.get('active_appearance_id') or 'none'}",
+            f"screen: {visible.get('position') or 'off-screen'}",
+            f"expression: {visible.get('expression') or 'neutral'}",
+            "appearances:",
         ]
         if not character_appearances:
             entry_lines.append("* none registered")
@@ -812,13 +816,12 @@ def build_character_visual_state(story, selected_characters, current_scene):
             continue
         sent = 0
         for appearance in character_appearances[:4]:
-            summary = summarize_appearance_for_prompt(character, appearance, assets_by_id)
-            if not summary:
+            match_label = appearance_match_label_for_prompt(character, appearance, assets_by_id)
+            if not match_label:
                 continue
-            entry_lines.append(f"* {appearance.get('id')}: {summary}")
-            if appearance.get("id") == (active or {}).get("id"):
-                entry_lines.append(f"  Current expression: {visible.get('expression') or 'neutral'}")
-                entry_lines.append(f"  On screen: {visible.get('position') or 'off-screen'}")
+            keywords = appearance_match_keywords_for_prompt(appearance)
+            keyword_text = f" | keywords: {', '.join(keywords)}" if keywords else " | keywords: none"
+            entry_lines.append(f"- {appearance.get('id')}: {match_label}{keyword_text}")
             sent += 1
         omitted = max(0, len(character_appearances) - sent)
         if omitted:
@@ -850,6 +853,34 @@ def active_character_appearance(character, appearances):
         if appearance.get("id") == active_id or appearance.get("is_active"):
             return appearance
     return (appearances or [None])[0]
+
+
+def appearance_match_label_for_prompt(character, appearance, assets_by_id):
+    label = meaningful_appearance_label(appearance.get("match_label"))
+    if label:
+        return compact(clean_technical_appearance_summary(label), 90)
+    summary = appearance_summary_text(appearance.get("match_summary"))
+    if summary:
+        return compact(clean_technical_appearance_summary(summary), 90)
+    generated = summarize_appearance_for_prompt(character, appearance, assets_by_id)
+    return compact(generated, 90)
+
+
+def appearance_match_keywords_for_prompt(appearance):
+    raw = appearance.get("match_keywords") if isinstance(appearance, dict) else []
+    if isinstance(raw, str):
+        raw = [item.strip() for item in raw.split(",")]
+    if not isinstance(raw, list):
+        return []
+    keywords = []
+    seen = set()
+    for item in raw:
+        text = appearance_summary_text(item)
+        key = normalize_prompt_name(text)
+        if text and key not in seen:
+            keywords.append(compact(text, 40))
+            seen.add(key)
+    return keywords[:8]
 
 
 def summarize_appearance_for_prompt(character, appearance, assets_by_id):
@@ -1197,11 +1228,19 @@ def build_output_requirements():
             "If any source mentions persistent clothing change/removal, armor, disguise, transformation, major injury, or skin/hair/eye/body change for an existing character, appearance_updates must not be empty.",
             "Use create_new if the new visual state is not listed in CHARACTER VISUAL STATE.",
             "Use switch_existing/revert_existing only if an existing appearance already visually matches the new state.",
+            "Use switch_existing/revert_existing when PLAYER_CHOICE matches any listed appearance label, summary, or keyword in CHARACTER VISUAL STATE.",
+            "Use create_new only when no listed appearance label, summary, or keyword matches the requested persistent visual state.",
             "Never switch to the same active appearance unless that active appearance already describes the new state.",
             "Do not use appearance_updates for expressions, emotions, poses, gestures, lighting, speaking, walking, holding temporary objects, or temporary dirt/wetness.",
             "Any registered visual character who speaks in dialogues must also appear in characters_on_screen. If a character is absent or off-screen, they must not speak as a normal dialogue entry.",
             "If the scene or memory says the character is visually different from the active appearance, appearance_updates must describe that change.",
-            "create_new requires: character, action, based_on_appearance_id, new_appearance_name, new_appearance_summary, change_prompt, reason, activate_after_generation.",
+            "create_new requires: character, action, based_on_appearance_id, new_appearance_name, new_appearance_summary, match_label, match_summary, match_keywords, change_prompt, reason, activate_after_generation.",
+            "match_label is a short human-readable label for the persistent visual state.",
+            "match_summary briefly explains the persistent visual state.",
+            "match_keywords is an array of natural words or phrases the player may use later to request this appearance.",
+            "match_label, match_summary, and match_keywords must use the story/narrative language. If the story language is pt-BR, use Portuguese. If it is English, use English. Do not mix languages unless the story itself naturally does.",
+            "For match metadata, focus only on persistent visual state: clothing, armor, disguise, body transformation, hair, skin, eyes, injury, or similar durable visual traits.",
+            "For match metadata, do not include pose, emotion, lighting, background, camera angle, personality, story justification, or temporary actions.",
             "When VISUAL REFERENCE REQUEST names a saved reference, the corresponding create_new update also requires reference_name with that exact logical name.",
             'For that referenced update, change_prompt must be exactly "Replace the character\'s outfit with the outfit shown in image 2." Never describe the clothing from the story text.',
             "For create_new, new_appearance_summary describes the resulting appearance and reason explains the narrative decision; do not put those explanations in change_prompt.",
@@ -1212,6 +1251,8 @@ def build_output_requirements():
             'Correct change_prompt for removing a character\'s clothes: "remove all clothes, shirtless, pantless, barefoot, wearing only underwear".',
             'Incorrect change_prompt: "Thorn is now stripped of his heavy armor by the divine presence, looking vulnerable yet resolute.".',
             "switch_existing/revert_existing require: character, action, target_appearance_id, reason, activate_after_generation.",
+            "For switch_existing/revert_existing, target_appearance_id must be copied exactly from CHARACTER VISUAL STATE. Never invent, shorten, or mistype appearance IDs.",
+            "If PLAYER_CHOICE says to put a jacket, clothes, armor, or outfit back on, switch to the listed existing appearance that actually contains that clothing state; do not pick a partial-undress appearance unless that is explicitly requested.",
             "Valid actions: create_new, switch_existing, revert_existing.",
             'Example: if PLAYER_CHOICE says "remove Mike\'s hoodie" and no existing appearance matches that state, return create_new based on Michael\'s active appearance.',
         ]

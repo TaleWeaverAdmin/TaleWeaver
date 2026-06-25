@@ -3736,7 +3736,7 @@ textarea:focus {
   min-height: 170px;
   align-content: start;
   margin: 0;
-  padding: 8px;
+  padding: 8px 8px 48px;
   text-align: center;
   background: rgba(255, 255, 255, 0.045);
 }
@@ -3791,31 +3791,70 @@ textarea:focus {
   font-size: 11px;
 }
 
-.appearance-regenerate-button {
+.appearance-regenerate-button,
+.appearance-edit-button,
+.appearance-delete-button,
+.appearance-icon-button {
   position: absolute;
   z-index: 2;
-  top: 6px;
-  right: 6px;
-  width: 32px;
-  height: 32px;
+  top: auto;
+  bottom: 8px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   padding: 0;
   border-radius: 7px;
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(5, 7, 12, 0.72);
-  backdrop-filter: blur(10px);
+  border-color: rgba(15, 23, 42, 0.18);
+  background: rgba(248, 250, 252, 0.94);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
 }
 
-.appearance-regenerate-button:hover {
+.appearance-regenerate-button {
+  left: calc(50% - 55px);
+  right: auto;
+}
+
+.appearance-edit-button {
+  left: calc(50% - 17px);
+  right: auto;
+}
+
+.appearance-delete-button {
+  left: calc(50% + 21px);
+  right: auto;
+}
+
+.appearance-regenerate-button:hover,
+.appearance-edit-button:hover,
+.appearance-delete-button:hover,
+.appearance-icon-button:hover {
   transform: none;
-  border-color: rgba(255, 213, 95, 0.62);
-  background: rgba(255, 213, 95, 0.18);
+  border-color: rgba(14, 165, 233, 0.7);
+  background: rgba(224, 242, 254, 0.98);
 }
 
-.appearance-regenerate-button img {
-  width: 16px;
-  height: 16px;
+.appearance-delete-button:hover,
+.appearance-icon-button.danger:hover {
+  border-color: rgba(248, 113, 113, 0.75);
+  background: rgba(254, 226, 226, 0.98);
+}
+
+.appearance-delete-button:disabled,
+.appearance-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  background: rgba(226, 232, 240, 0.88);
+}
+
+.appearance-regenerate-button img,
+.appearance-edit-button img,
+.appearance-delete-button img,
+.appearance-icon-button img {
+  width: 17px;
+  height: 17px;
+  opacity: 0.92;
 }
 
 .appearance-change-form textarea {

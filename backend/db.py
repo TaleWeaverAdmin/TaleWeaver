@@ -123,6 +123,9 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 character_id TEXT NOT NULL,
                 label TEXT,
+                match_label TEXT,
+                match_summary TEXT,
+                match_keywords TEXT NOT NULL DEFAULT '[]',
                 primary_asset_id TEXT,
                 neutral_asset_id TEXT,
                 is_active INTEGER NOT NULL DEFAULT 0,
@@ -301,6 +304,15 @@ def init_db():
         ensure_columns(conn, "generated_assets", {"base_asset_id": "TEXT", "appearance_id": "TEXT"})
         ensure_columns(
             conn,
+            "character_appearances",
+            {
+                "match_label": "TEXT",
+                "match_summary": "TEXT",
+                "match_keywords": "TEXT NOT NULL DEFAULT '[]'",
+            },
+        )
+        ensure_columns(
+            conn,
             "characters",
             {
                 "species": "TEXT",
@@ -466,6 +478,10 @@ def json_load(value, default):
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def optional_fk(value):
+    return value or None
 
 
 def get_settings():
@@ -1268,15 +1284,19 @@ def duplicate_story(story_id):
             conn.execute(
                 """
                 INSERT INTO character_appearances (
-                    id, character_id, label, primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    id, character_id, label, match_label, match_summary, match_keywords,
+                    primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_appearance_id,
                     new_character_id,
                     row["label"],
-                    asset_map.get(row["primary_asset_id"], ""),
-                    asset_map.get(row["neutral_asset_id"], ""),
+                    row["match_label"] if "match_label" in row.keys() else "",
+                    row["match_summary"] if "match_summary" in row.keys() else "",
+                    row["match_keywords"] if "match_keywords" in row.keys() else "[]",
+                    optional_fk(asset_map.get(row["primary_asset_id"])),
+                    optional_fk(asset_map.get(row["neutral_asset_id"])),
                     row["is_active"],
                     timestamp,
                     timestamp,
@@ -1324,7 +1344,7 @@ def duplicate_story(story_id):
                 """,
                 (
                     new_id("scenario"), new_story_id, row["name"], row["description"], row["prompt"],
-                    row["enhanced_prompt"], asset_map.get(row["asset_id"], ""), row["is_active"], timestamp, timestamp,
+                    row["enhanced_prompt"], optional_fk(asset_map.get(row["asset_id"])), row["is_active"], timestamp, timestamp,
                 ),
             )
 
@@ -1554,6 +1574,13 @@ def build_initial_scene(payload):
     visual_characters = characters[1:] if participation_mode == "first_person" else characters
     starting_message = payload.get("starting_message") or ""
     starting_location = payload.get("starting_location") or ""
+    choices = normalize_initial_choices(payload.get("initial_choices"))
+    if len(choices) < 3:
+        for fallback_choice in initial_choices_for_mode(participation_mode, payload.get("language")):
+            if fallback_choice not in choices:
+                choices.append(fallback_choice)
+            if len(choices) >= 3:
+                break
     present = detect_initial_characters(visual_characters, starting_message)
     if not present and player.get("name") and participation_mode != "first_person":
         present = [player]
@@ -1561,7 +1588,7 @@ def build_initial_scene(payload):
         "title": starting_location or "Primeira cena",
         "scene_text": starting_message,
         "dialogues": [{"character": "Narrador", "expression": "neutral", "text": starting_message}],
-        "choices": initial_choices_for_mode(participation_mode),
+        "choices": choices[:3],
         "characters_on_screen": [
             {"name": character.get("name"), "position": position_for_index(index, len(present)), "expression": "neutral"}
             for index, character in enumerate(present[:4])
@@ -1581,7 +1608,28 @@ def build_initial_scene(payload):
     }
 
 
-def initial_choices_for_mode(participation_mode):
+def normalize_initial_choices(value):
+    if not isinstance(value, list):
+        return []
+    choices = []
+    for item in value[:3]:
+        if isinstance(item, dict):
+            text = compact_text(item.get("text") or item.get("label") or item.get("choice") or item.get("action"), 180)
+        else:
+            text = compact_text(item, 180)
+        if text:
+            choices.append(text)
+    return choices
+
+
+def initial_choices_for_mode(participation_mode, language=""):
+    english = str(language or "").lower().startswith("en")
+    if english:
+        if participation_mode == "narrator":
+            return ["Deepen the central conflict", "Shift focus to another character", "Create an immediate consequence"]
+        if participation_mode == "third_person":
+            return ["Have the protagonist observe the surroundings", "Have the protagonist speak with someone present", "Have the protagonist advance carefully"]
+        return ["Observe the surroundings", "Speak with someone present", "Advance carefully"]
     if participation_mode == "narrator":
         return ["Aprofundar o conflito central", "Mudar o foco para outro personagem", "Criar uma consequencia imediata"]
     if participation_mode == "third_person":
@@ -1626,6 +1674,13 @@ def compact_text(value, limit):
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def normalize_lookup_text(value):
+    text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
 
 
 def compact_ai_summary(value, limit=110, fallback=""):
@@ -1900,7 +1955,7 @@ def replace_latest_scene(story_id, expected_scene_id, scene, previous_scene=None
         remove_scene_memory_updates(conn, story_id, serialize_scene(current))
         conn.execute("DELETE FROM choices WHERE scene_id = ?", (current["id"],))
         conn.execute(
-            "UPDATE generated_assets SET scene_id = '' WHERE scene_id = ? AND asset_type = 'background'",
+            "UPDATE generated_assets SET scene_id = NULL WHERE scene_id = ? AND asset_type = 'background'",
             (current["id"],),
         )
         conn.execute(
@@ -2113,8 +2168,8 @@ def add_asset(story_id, payload):
             (
                 asset_id,
                 story_id,
-                payload.get("character_id"),
-                payload.get("scene_id"),
+                optional_fk(payload.get("character_id")),
+                optional_fk(payload.get("scene_id")),
                 payload.get("appearance_id") or "",
                 payload.get("asset_type") or "image",
                 payload.get("base_asset_id") or "",
@@ -2255,7 +2310,7 @@ def create_story_scenario(story_id, payload, active=False):
                 str(payload.get("description") or "").strip(),
                 str(payload.get("prompt") or "").strip(),
                 str(payload.get("enhanced_prompt") or "").strip(),
-                asset_id, 1 if active else 0, timestamp, timestamp,
+                optional_fk(asset_id), 1 if active else 0, timestamp, timestamp,
             ),
         )
         conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
@@ -2392,27 +2447,61 @@ def update_asset_base(asset_id, base_asset_id):
     return get_asset(asset_id)
 
 
-def create_character_appearance(character_id, label="", primary_asset_id="", neutral_asset_id="", active=True):
+def normalize_match_keywords(value):
+    if isinstance(value, str):
+        parsed = json_load(value, None)
+        if parsed is not None:
+            value = parsed
+        else:
+            value = [item.strip() for item in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    keywords = []
+    seen = set()
+    for item in value:
+        text = compact_text(item, 80)
+        key = normalize_lookup_text(text)
+        if text and key not in seen:
+            keywords.append(text)
+            seen.add(key)
+    return keywords[:12]
+
+
+def create_character_appearance(
+    character_id,
+    label="",
+    primary_asset_id="",
+    neutral_asset_id="",
+    active=True,
+    match_label="",
+    match_summary="",
+    match_keywords=None,
+):
     character = get_character(character_id)
     if not character:
         return None
     timestamp = now_ms()
     appearance_id = new_id("appearance")
+    match_keywords = normalize_match_keywords(match_keywords)
     with connect() as conn:
         if active:
             conn.execute("UPDATE character_appearances SET is_active = 0 WHERE character_id = ?", (character_id,))
         conn.execute(
             """
             INSERT INTO character_appearances (
-                id, character_id, label, primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, character_id, label, match_label, match_summary, match_keywords,
+                primary_asset_id, neutral_asset_id, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 appearance_id,
                 character_id,
                 label or "Aparencia",
-                primary_asset_id or neutral_asset_id or "",
-                neutral_asset_id or primary_asset_id or "",
+                compact_text(match_label, 120),
+                compact_text(match_summary, 280),
+                json.dumps(match_keywords, ensure_ascii=False),
+                optional_fk(primary_asset_id or neutral_asset_id),
+                optional_fk(neutral_asset_id or primary_asset_id),
                 1 if active else 0,
                 timestamp,
                 timestamp,
@@ -2434,6 +2523,41 @@ def create_character_appearance(character_id, label="", primary_asset_id="", neu
                 (appearance_id, timestamp, character_id),
             )
     return get_appearance(appearance_id)
+
+
+def update_character_appearance_metadata(character_id, appearance_id, payload):
+    match_keywords = normalize_match_keywords(payload.get("match_keywords"))
+    timestamp = now_ms()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ca.*, c.story_id FROM character_appearances ca
+            JOIN characters c ON c.id = ca.character_id
+            WHERE ca.id = ? AND ca.character_id = ?
+            """,
+            (appearance_id, character_id),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            """
+            UPDATE character_appearances
+            SET match_label = ?, match_summary = ?, match_keywords = ?, updated_at = ?
+            WHERE id = ? AND character_id = ?
+            """,
+            (
+                compact_text(payload.get("match_label"), 120),
+                compact_text(payload.get("match_summary"), 280),
+                json.dumps(match_keywords, ensure_ascii=False),
+                timestamp,
+                appearance_id,
+                character_id,
+            ),
+        )
+        conn.execute("UPDATE characters SET updated_at = ? WHERE id = ?", (timestamp, character_id))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, row["story_id"]))
+        story_id = row["story_id"]
+    return get_story(story_id)
 
 
 def get_appearance(appearance_id):
@@ -2553,6 +2677,47 @@ def set_active_appearance(character_id, appearance_id):
         story_id = conn.execute("SELECT story_id FROM characters WHERE id = ?", (character_id,)).fetchone()["story_id"]
         conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, story_id))
     return get_story(story_id)
+
+
+def delete_character_appearance(character_id, appearance_id):
+    timestamp = now_ms()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ca.*, c.story_id FROM character_appearances ca
+            JOIN characters c ON c.id = ca.character_id
+            WHERE ca.id = ? AND ca.character_id = ?
+            """,
+            (appearance_id, character_id),
+        ).fetchone()
+        if not row:
+            return None, "not_found"
+        if row["is_active"]:
+            return None, "active"
+        related_asset_ids = {
+            value for value in [row["primary_asset_id"], row["neutral_asset_id"]]
+            if value
+        }
+        asset_rows = conn.execute(
+            "SELECT id FROM generated_assets WHERE appearance_id = ?",
+            (appearance_id,),
+        ).fetchall()
+        related_asset_ids.update(row["id"] for row in asset_rows)
+        if related_asset_ids:
+            placeholders = ",".join("?" for _ in related_asset_ids)
+            child_rows = conn.execute(
+                f"SELECT id FROM generated_assets WHERE base_asset_id IN ({placeholders})",
+                tuple(related_asset_ids),
+            ).fetchall()
+            related_asset_ids.update(item["id"] for item in child_rows)
+        conn.execute("DELETE FROM character_appearances WHERE id = ? AND character_id = ?", (appearance_id, character_id))
+        if related_asset_ids:
+            placeholders = ",".join("?" for _ in related_asset_ids)
+            conn.execute(f"DELETE FROM generated_assets WHERE id IN ({placeholders})", tuple(related_asset_ids))
+        conn.execute("UPDATE characters SET updated_at = ? WHERE id = ?", (timestamp, character_id))
+        conn.execute("UPDATE stories SET updated_at = ? WHERE id = ?", (timestamp, row["story_id"]))
+        story_id = row["story_id"]
+    return get_story(story_id), ""
 
 
 def ensure_appearances_for_story(story_id):
@@ -2863,6 +3028,9 @@ def serialize_appearance(row):
     if not data:
         return None
     data["is_active"] = bool(data.get("is_active"))
+    data["match_label"] = compact_text(data.get("match_label") or data.get("label") or "", 120)
+    data["match_summary"] = compact_text(data.get("match_summary") or "", 280)
+    data["match_keywords"] = normalize_match_keywords(data.get("match_keywords"))
     return data
 
 

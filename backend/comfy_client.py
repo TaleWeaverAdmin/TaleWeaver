@@ -3,11 +3,187 @@ import mimetypes
 import random
 import re
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
+
+COMFY_PROVIDERS = {"local_standard", "remote_standard", "comfy_cloud"}
+COMFY_PROVIDER_SLOTS = {
+    "sprite": "sprite_comfy_provider",
+    "background": "background_comfy_provider",
+    "appearance": "appearance_comfy_provider",
+    "appearance_reference": "appearance_reference_comfy_provider",
+    "expression": "expression_comfy_provider",
+}
+
+
+def normalize_comfy_provider(provider):
+    text = str(provider or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in COMFY_PROVIDERS else "local_standard"
+
+
+def comfy_default_provider(settings):
+    return normalize_comfy_provider((settings or {}).get("comfy_default_provider") or "local_standard")
+
+
+def comfy_provider_for_style_slot(settings, visual_style, slot):
+    field = COMFY_PROVIDER_SLOTS.get(str(slot or "").strip())
+    value = (visual_style or {}).get(field) if field else ""
+    return normalize_comfy_provider(value or comfy_default_provider(settings))
+
+
+def is_remote_comfy_provider(provider):
+    return normalize_comfy_provider(provider) in {"remote_standard", "comfy_cloud"}
+
+
+def build_comfy_url(settings, provider, path):
+    provider = normalize_comfy_provider(provider)
+    path = "/" + str(path or "").lstrip("/")
+    if provider == "remote_standard":
+        base = str((settings or {}).get("comfy_remote_url") or "").strip()
+        prefix = str((settings or {}).get("comfy_remote_api_prefix") or "").strip()
+    elif provider == "comfy_cloud":
+        base = str((settings or {}).get("comfy_cloud_url") or "https://cloud.comfy.org").strip()
+        prefix = str((settings or {}).get("comfy_cloud_api_prefix") or "/api").strip()
+    else:
+        base = str((settings or {}).get("comfy_url") or "http://127.0.0.1:8188").strip()
+        prefix = ""
+    if not base:
+        raise ValueError(f"ComfyUI provider {provider} nao tem URL configurada.")
+    prefix = "/" + prefix.strip("/") if prefix else ""
+    return f"{base.rstrip('/')}{prefix}{path}"
+
+
+def build_comfy_headers(settings, provider, content_type="application/json"):
+    provider = normalize_comfy_provider(provider)
+    headers = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    if provider == "remote_standard":
+        auth_type = str((settings or {}).get("comfy_remote_auth_type") or "none").strip().lower()
+        token = str((settings or {}).get("comfy_remote_auth_token") or "")
+        if auth_type == "bearer" and token:
+            headers["Authorization"] = f"Bearer {token}"
+        elif auth_type == "x_api_key" and token:
+            headers["X-API-Key"] = token
+        elif auth_type == "custom_header" and token:
+            name = str((settings or {}).get("comfy_remote_auth_header_name") or "").strip()
+            if name:
+                headers[name] = token
+    elif provider == "comfy_cloud":
+        token = str((settings or {}).get("comfy_cloud_auth_token") or "")
+        if token:
+            headers["X-API-Key"] = token
+    return headers
+
+
+def comfy_workflows_dir_for_provider(settings, provider):
+    provider = normalize_comfy_provider(provider)
+    if provider == "remote_standard":
+        configured = (settings or {}).get("comfy_remote_workflows_dir") or (settings or {}).get("comfy_workflows_dir")
+    elif provider == "comfy_cloud":
+        configured = (settings or {}).get("comfy_cloud_workflows_dir") or (settings or {}).get("comfy_workflows_dir")
+    else:
+        configured = (settings or {}).get("comfy_workflows_dir")
+    if configured:
+        return Path(configured)
+    comfy_root = (settings or {}).get("comfy_root") or ""
+    return Path(comfy_root) / "user" / "default" / "workflows"
+
+
+def _is_settings(value):
+    return isinstance(value, dict)
+
+
+def _request_url(settings_or_base_url, provider, path):
+    if _is_settings(settings_or_base_url):
+        return build_comfy_url(settings_or_base_url, provider, path)
+    return f"{str(settings_or_base_url or '').rstrip('/')}/" + str(path or "").lstrip("/")
+
+
+def _request_headers(settings_or_base_url, provider, content_type="application/json"):
+    if _is_settings(settings_or_base_url):
+        return build_comfy_headers(settings_or_base_url, provider, content_type)
+    return {"Content-Type": content_type} if content_type else {}
+
+
+def _error_message(provider, exc, operation):
+    provider = normalize_comfy_provider(provider)
+    prefix = f"ComfyUI provider {provider} failed"
+    if isinstance(exc, urllib.error.HTTPError):
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        detail = " ".join(detail.split())[:600]
+        if exc.code in {401, 403}:
+            reason = "unauthorized or invalid API key"
+        elif exc.code == 404:
+            reason = "endpoint not found or provider does not expose the expected API"
+        elif exc.code == 429:
+            reason = "rate limit"
+        elif exc.code == 400:
+            lower = detail.lower()
+            if "checkpoint" in lower or "model" in lower:
+                reason = "missing model or checkpoint"
+            elif "class_type" in lower or "node" in lower:
+                reason = "missing node or invalid workflow"
+            else:
+                reason = "invalid workflow or request"
+        else:
+            reason = f"HTTP {exc.code}"
+        return f"{prefix}: {reason} during {operation}" + (f". Detail: {detail}" if detail else "")
+    if isinstance(exc, urllib.error.URLError):
+        return f"{prefix}: server unreachable during {operation}. Detail: {exc.reason}"
+    if isinstance(exc, FileNotFoundError):
+        return f"{prefix}: workflow file or upload image missing during {operation}. Detail: {exc}"
+    return f"{prefix}: {operation} failed. Detail: {exc}"
+
+
+def comfy_verify_ssl(settings, provider):
+    if not _is_settings(settings):
+        return True
+    provider = normalize_comfy_provider(provider)
+    if provider == "remote_standard":
+        return settings.get("comfy_remote_verify_ssl") is not False
+    if provider == "comfy_cloud":
+        return settings.get("comfy_cloud_verify_ssl") is not False
+    return True
+
+
+def _ssl_context_for(settings_or_base_url, provider):
+    if _is_settings(settings_or_base_url) and not comfy_verify_ssl(settings_or_base_url, provider):
+        return ssl._create_unverified_context()
+    return None
+
+
+def _urlopen_json(request, provider, operation, timeout, settings_or_base_url=None):
+    try:
+        context = _ssl_context_for(settings_or_base_url, provider)
+        kwargs = {"timeout": timeout}
+        if context is not None:
+            kwargs["context"] = context
+        with urllib.request.urlopen(request, **kwargs) as response:
+            body = response.read().decode("utf-8") or "{}"
+        return json.loads(body)
+    except Exception as exc:
+        raise RuntimeError(_error_message(provider, exc, operation)) from exc
+
+
+def _urlopen_bytes(url_or_request, provider, operation, timeout, settings_or_base_url=None):
+    try:
+        context = _ssl_context_for(settings_or_base_url, provider)
+        kwargs = {"timeout": timeout}
+        if context is not None:
+            kwargs["context"] = context
+        with urllib.request.urlopen(url_or_request, **kwargs) as response:
+            return response.read(), response.headers.get("content-type") or "image/png"
+    except Exception as exc:
+        raise RuntimeError(_error_message(provider, exc, operation)) from exc
 
 
 def is_timeout_error(exc):
@@ -18,14 +194,21 @@ def is_timeout_error(exc):
     return False
 
 
-def get_system_stats(base_url):
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/system_stats", timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
+def get_system_stats(settings_or_base_url, provider="local_standard"):
+    status_path = "/object_info" if _is_settings(settings_or_base_url) and normalize_comfy_provider(provider) == "comfy_cloud" else "/system_stats"
+    request = urllib.request.Request(
+        _request_url(settings_or_base_url, provider, status_path),
+        headers=_request_headers(settings_or_base_url, provider, None),
+    )
+    return _urlopen_json(request, provider, "connection test", 5, settings_or_base_url)
 
 
-def list_checkpoints(base_url):
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/object_info/CheckpointLoaderSimple", timeout=5) as response:
-        data = json.loads(response.read().decode("utf-8"))
+def list_checkpoints(settings_or_base_url, provider="local_standard"):
+    request = urllib.request.Request(
+        _request_url(settings_or_base_url, provider, "/object_info/CheckpointLoaderSimple"),
+        headers=_request_headers(settings_or_base_url, provider, None),
+    )
+    data = _urlopen_json(request, provider, "checkpoint list", 5, settings_or_base_url)
     return data.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", [[]])[0]
 
 
@@ -63,25 +246,26 @@ def list_workbenches(workflows_dir):
     return workbenches
 
 
-def get_object_info(base_url, node_name):
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/object_info/{urllib.parse.quote(node_name)}", timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def free_memory(base_url, unload_models=True, free_memory_flag=True):
+def get_object_info(settings_or_base_url, node_name, provider="local_standard"):
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/free",
+        _request_url(settings_or_base_url, provider, f"/object_info/{urllib.parse.quote(node_name)}"),
+        headers=_request_headers(settings_or_base_url, provider, None),
+    )
+    return _urlopen_json(request, provider, "object info", 5, settings_or_base_url)
+
+
+def free_memory(settings_or_base_url, unload_models=True, free_memory_flag=True, provider="local_standard"):
+    request = urllib.request.Request(
+        _request_url(settings_or_base_url, provider, "/free"),
         data=json.dumps({"unload_models": bool(unload_models), "free_memory": bool(free_memory_flag)}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_request_headers(settings_or_base_url, provider, "application/json"),
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        body = response.read().decode("utf-8") or "{}"
-    return json.loads(body)
+    return _urlopen_json(request, provider, "free memory", 20, settings_or_base_url)
 
 
 def queue_simple_image(
-    base_url,
+    settings_or_base_url,
     prompt,
     width=1024,
     height=576,
@@ -93,20 +277,23 @@ def queue_simple_image(
     scheduler="karras",
     negative_prompt="",
     seed=None,
+    provider="local_standard",
 ):
     workflow = build_workflow(prompt, width, height, asset_type, checkpoint, steps, cfg, sampler_name, scheduler, negative_prompt, seed)
+    payload = {"prompt": workflow}
+    if _is_settings(settings_or_base_url) and normalize_comfy_provider(provider) == "comfy_cloud" and settings_or_base_url.get("comfy_cloud_extra_data_api_key") and settings_or_base_url.get("comfy_cloud_auth_token"):
+        payload["extra_data"] = {"api_key_comfy_org": settings_or_base_url.get("comfy_cloud_auth_token")}
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/prompt",
-        data=json.dumps({"prompt": workflow}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        _request_url(settings_or_base_url, provider, "/prompt"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers=_request_headers(settings_or_base_url, provider, "application/json"),
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return _urlopen_json(request, provider, "submit prompt", 30, settings_or_base_url)
 
 
 def queue_workbench_image(
-    base_url,
+    settings_or_base_url,
     workflows_dir,
     workbench_id,
     prompt,
@@ -124,9 +311,10 @@ def queue_workbench_image(
     input_image_path=None,
     reference_image_path=None,
     expression_prompts=None,
+    provider="local_standard",
 ):
-    input_image = upload_image(base_url, input_image_path) if input_image_path else None
-    reference_image = upload_image(base_url, reference_image_path) if reference_image_path else None
+    input_image = upload_image(settings_or_base_url, input_image_path, provider=provider) if input_image_path else None
+    reference_image = upload_image(settings_or_base_url, reference_image_path, provider=provider) if reference_image_path else None
     workflow = load_api_workflow(workflows_dir, workbench_id)
     workflow = apply_workbench_inputs(
         workflow,
@@ -146,23 +334,180 @@ def queue_workbench_image(
         reference_image,
         expression_prompts,
     )
+    payload = {"prompt": workflow}
+    if _is_settings(settings_or_base_url) and normalize_comfy_provider(provider) == "comfy_cloud" and settings_or_base_url.get("comfy_cloud_extra_data_api_key") and settings_or_base_url.get("comfy_cloud_auth_token"):
+        payload["extra_data"] = {"api_key_comfy_org": settings_or_base_url.get("comfy_cloud_auth_token")}
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/prompt",
-        data=json.dumps({"prompt": workflow}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        _request_url(settings_or_base_url, provider, "/prompt"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers=_request_headers(settings_or_base_url, provider, "application/json"),
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return _urlopen_json(request, provider, "submit prompt", 30, settings_or_base_url)
 
 
-def get_history(base_url, prompt_id):
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/history/{prompt_id}", timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+def get_history(settings_or_base_url, prompt_id, provider="local_standard"):
+    if _is_settings(settings_or_base_url) and normalize_comfy_provider(provider) == "comfy_cloud":
+        return get_comfy_cloud_job_history(settings_or_base_url, prompt_id, provider=provider)
+    request = urllib.request.Request(
+        _request_url(settings_or_base_url, provider, f"/history/{urllib.parse.quote(str(prompt_id or ''))}"),
+        headers=_request_headers(settings_or_base_url, provider, None),
+    )
+    return _urlopen_json(request, provider, "history/status", 10, settings_or_base_url)
 
 
-def get_first_history_image(base_url, prompt_id):
-    history = get_history(base_url, prompt_id)
+def get_comfy_cloud_job_history(settings, prompt_id, provider="comfy_cloud"):
+    request = urllib.request.Request(
+        _request_url(settings, provider, f"/jobs/{urllib.parse.quote(str(prompt_id or ''))}"),
+        headers=_request_headers(settings, provider, None),
+    )
+    data = _urlopen_json(request, provider, "history/status", 10, settings)
+    return normalize_comfy_cloud_job_history(prompt_id, data)
+
+
+def normalize_comfy_cloud_job_history(prompt_id, data):
+    job = data.get("job") if isinstance(data, dict) and isinstance(data.get("job"), dict) else data
+    job = job if isinstance(job, dict) else {}
+    job_id = str(job.get("prompt_id") or job.get("id") or prompt_id or "")
+    status = str(
+        job.get("status")
+        or job.get("state")
+        or job.get("status_str")
+        or job.get("job_status")
+        or ""
+    ).strip().lower()
+    normalized_status = {
+        "completed": "success",
+        "complete": "success",
+        "succeeded": "success",
+        "success": "success",
+        "finished": "success",
+        "failed": "error",
+        "failure": "error",
+        "error": "error",
+        "cancelled": "error",
+        "canceled": "error",
+    }.get(status, status or "running")
+    error = job.get("error") or job.get("failure_reason") or job.get("message") or ""
+    output_source = first_present(job, ["outputs", "output", "result", "results", "artifacts", "assets", "images", "files"])
+    images = collect_comfy_cloud_images(output_source) if output_source else []
+    outputs = {"cloud": {"images": images}} if images else {}
+    history_key = str(prompt_id or job_id or "")
+    return {
+        history_key: {
+            "outputs": outputs,
+            "status": {
+                "status_str": normalized_status,
+                "messages": [["error", error]] if error and normalized_status == "error" else [],
+            },
+            "comfy_cloud_job": redact_cloud_job_for_history(job),
+        }
+    }
+
+
+def collect_comfy_cloud_images(value):
+    images = []
+    seen = set()
+
+    def add_image(item, node_id="cloud"):
+        image = normalize_comfy_cloud_image(item, node_id)
+        key = image_identity(image)
+        if image and key not in seen:
+            seen.add(key)
+            images.append(image)
+
+    def walk(item, node_id="cloud"):
+        if isinstance(item, str):
+            if looks_like_image_url(item):
+                add_image(item, node_id)
+            return
+        if isinstance(item, list):
+            for index, child in enumerate(item):
+                walk(child, f"{node_id}_{index}")
+            return
+        if not isinstance(item, dict):
+            return
+        if is_cloud_image_item(item):
+            add_image(item, str(item.get("node_id") or item.get("node") or node_id))
+        nested_images = item.get("images")
+        if isinstance(nested_images, list):
+            for child in nested_images:
+                add_image(child, str(item.get("node_id") or item.get("node") or node_id))
+        for key, child in item.items():
+            if key in {"images"}:
+                continue
+            walk(child, str(key or node_id))
+
+    walk(value)
+    return images
+
+
+def normalize_comfy_cloud_image(item, node_id="cloud"):
+    if isinstance(item, str):
+        url = item
+        filename = filename_from_url(url) or "comfy_cloud_output.png"
+        return {"filename": filename, "type": "output", "subfolder": "", "url": url, "node_id": node_id}
+    if not isinstance(item, dict):
+        return {}
+    url = first_present(item, ["url", "download_url", "image_url", "file_url", "signed_url", "public_url", "src"])
+    filename = first_present(item, ["filename", "file_name", "name", "path", "key"]) or filename_from_url(url) or "comfy_cloud_output.png"
+    image = dict(item)
+    image.setdefault("filename", Path(str(filename)).name or "comfy_cloud_output.png")
+    image.setdefault("type", item.get("type") or item.get("output_type") or "output")
+    image.setdefault("subfolder", item.get("subfolder") or "")
+    image.setdefault("node_id", node_id)
+    if url:
+        image["url"] = url
+    return image
+
+
+def is_cloud_image_item(item):
+    if not isinstance(item, dict):
+        return False
+    if first_present(item, ["url", "download_url", "image_url", "file_url", "signed_url", "public_url", "src"]):
+        return True
+    filename = first_present(item, ["filename", "file_name", "name", "path", "key"])
+    return bool(filename and str(filename).lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")))
+
+
+def looks_like_image_url(value):
+    text = str(value or "").strip().lower().split("?")[0]
+    return text.startswith(("http://", "https://", "/")) and text.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+
+def image_identity(image):
+    if not isinstance(image, dict):
+        return ""
+    return "|".join(str(image.get(key) or "") for key in ["url", "filename", "subfolder", "type", "node_id"])
+
+
+def first_present(source, keys):
+    for key in keys:
+        value = source.get(key)
+        if value is not None and value != "":
+            return value
+    return ""
+
+
+def filename_from_url(url):
+    if not url:
+        return ""
+    parsed = urllib.parse.urlparse(str(url))
+    filename = Path(urllib.parse.unquote(parsed.path or "")).name
+    return filename if filename and "." in filename else ""
+
+
+def redact_cloud_job_for_history(job):
+    if not isinstance(job, dict):
+        return {}
+    return {
+        key: value for key, value in job.items()
+        if key not in {"outputs", "output", "result", "results"}
+    }
+
+
+def get_first_history_image(settings_or_base_url, prompt_id, provider="local_standard"):
+    history = get_history(settings_or_base_url, prompt_id, provider=provider)
     entry = history.get(prompt_id) or {}
     outputs = entry.get("outputs") or {}
     for output in outputs.values():
@@ -172,8 +517,8 @@ def get_first_history_image(base_url, prompt_id):
     return None
 
 
-def get_history_images(base_url, prompt_id):
-    history = get_history(base_url, prompt_id)
+def get_history_images(settings_or_base_url, prompt_id, provider="local_standard"):
+    history = get_history(settings_or_base_url, prompt_id, provider=provider)
     entry = history.get(prompt_id) or {}
     outputs = entry.get("outputs") or {}
     images = []
@@ -185,7 +530,14 @@ def get_history_images(base_url, prompt_id):
     return images, entry
 
 
-def download_image(base_url, image):
+def download_image(settings_or_base_url, image, provider="local_standard"):
+    direct_url = image_download_url(settings_or_base_url, image, provider)
+    if direct_url:
+        request = urllib.request.Request(
+            direct_url,
+            headers=_download_headers_for_url(settings_or_base_url, provider, direct_url),
+        )
+        return _urlopen_bytes(request, provider, "output download", 60, settings_or_base_url)
     params = urllib.parse.urlencode(
         {
             "filename": image.get("filename", ""),
@@ -193,11 +545,45 @@ def download_image(base_url, image):
             "subfolder": image.get("subfolder", ""),
         }
     )
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/view?{params}", timeout=60) as response:
-        return response.read(), response.headers.get("content-type") or "image/png"
+    request = urllib.request.Request(
+        _request_url(settings_or_base_url, provider, f"/view?{params}"),
+        headers=_request_headers(settings_or_base_url, provider, None),
+    )
+    return _urlopen_bytes(request, provider, "output download", 60, settings_or_base_url)
 
 
-def upload_image(base_url, image_path):
+def image_download_url(settings_or_base_url, image, provider="local_standard"):
+    if not isinstance(image, dict):
+        return ""
+    provider = normalize_comfy_provider(provider)
+    url = first_present(image, ["url", "download_url", "image_url", "file_url", "signed_url", "public_url", "src"])
+    if not url:
+        return ""
+    text = str(url).strip()
+    if text.startswith(("http://", "https://")):
+        return text
+    if not _is_settings(settings_or_base_url):
+        return ""
+    if text.startswith("/api/") and provider == "comfy_cloud":
+        base = str(settings_or_base_url.get("comfy_cloud_url") or "https://cloud.comfy.org").strip().rstrip("/")
+        return f"{base}{text}"
+    if text.startswith("/"):
+        return build_comfy_url(settings_or_base_url, provider, text)
+    return build_comfy_url(settings_or_base_url, provider, "/" + text)
+
+
+def _download_headers_for_url(settings_or_base_url, provider, url):
+    if not _is_settings(settings_or_base_url):
+        return {}
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if parsed.scheme in {"http", "https"}:
+        api_host = urllib.parse.urlparse(build_comfy_url(settings_or_base_url, provider, "/")).netloc
+        if parsed.netloc and parsed.netloc != api_host:
+            return {}
+    return _request_headers(settings_or_base_url, provider, None)
+
+
+def upload_image(settings_or_base_url, image_path, provider="local_standard"):
     path = Path(image_path or "")
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"Imagem de referencia nao encontrada: {image_path}")
@@ -217,13 +603,12 @@ def upload_image(base_url, image_path):
         ]
     )
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/upload/image",
+        _request_url(settings_or_base_url, provider, "/upload/image"),
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers=_request_headers(settings_or_base_url, provider, f"multipart/form-data; boundary={boundary}"),
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8") or "{}")
+    return _urlopen_json(request, provider, "upload image", 60, settings_or_base_url)
 
 
 def build_view_url(prompt_result, local_proxy_prefix="/api/comfy/view"):

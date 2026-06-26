@@ -1243,11 +1243,28 @@ option { color: #111; }
   width: 100%;
 }
 
+.settings-tabs {
+  margin: 4px 0 0;
+}
+
+.settings-tab-panel[hidden] {
+  display: none !important;
+}
+
+div.settings-tab-panel {
+  display: grid;
+  gap: 16px;
+}
+
 .style-workflow-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1.25fr) auto;
   gap: 12px;
   align-items: end;
+}
+
+.style-workflow-row > .field {
+  min-width: 0;
 }
 
 .inline-check {

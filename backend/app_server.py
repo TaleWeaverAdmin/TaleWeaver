@@ -60,15 +60,24 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_json({"models": ai_client.list_ollama_models(settings)})
             if path == "/api/comfy/status":
                 settings = db.get_settings()
-                return self.send_json(comfy_client.get_system_stats(settings.get("comfy_url")))
+                provider = comfy_provider_from_query(settings, query)
+                return self.send_json({"provider": provider, **comfy_client.get_system_stats(settings, provider=provider)})
             if path == "/api/comfy/checkpoints":
                 settings = db.get_settings()
-                return self.send_json({"checkpoints": comfy_client.list_checkpoints(settings.get("comfy_url"))})
+                provider = comfy_provider_from_query(settings, query)
+                return self.send_json({"provider": provider, "checkpoints": comfy_client.list_checkpoints(settings, provider=provider)})
             if path == "/api/comfy/workbenches":
                 settings = db.get_settings()
+                provider = comfy_provider_from_query(settings, query)
+                workbenches_by_provider = {
+                    item: comfy_client.list_workbenches(comfy_workflows_dir(settings, item))
+                    for item in ["local_standard", "remote_standard", "comfy_cloud"]
+                }
                 return self.send_json({
-                    "workbenches": comfy_client.list_workbenches(comfy_workflows_dir(settings)),
-                    "workflows_dir": str(comfy_workflows_dir(settings)),
+                    "provider": provider,
+                    "workbenches": workbenches_by_provider.get(provider, []),
+                    "workbenches_by_provider": workbenches_by_provider,
+                    "workflows_dir": str(comfy_workflows_dir(settings, provider)),
                 })
             if path == "/api/logs":
                 limit = (query.get("limit") or ["100"])[0]
@@ -76,8 +85,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_json({"logs": db.list_api_logs(story_id, limit)})
             if path.startswith("/api/comfy/object-info/"):
                 settings = db.get_settings()
+                provider = comfy_provider_from_query(settings, query)
                 node_name = path.split("/")[4]
-                return self.send_json(comfy_client.get_object_info(settings.get("comfy_url"), node_name))
+                return self.send_json(comfy_client.get_object_info(settings, node_name, provider=provider))
             if path == "/api/stories":
                 return self.send_json({"stories": db.list_stories()})
             if path.startswith("/api/stories/") and path.endswith("/references"):
@@ -560,9 +570,11 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = db.get_settings()
         asset_type = payload.get("asset_type") or "background"
         visual_style = db.visual_style_for_story(story_id) if asset_type in {"sprite", "background"} else None
+        slot = "sprite" if asset_type == "sprite" else "background"
+        provider = comfy_provider_for_style_slot(settings, visual_style, slot)
         style_settings = (visual_style or {}).get("advanced_settings") or {}
         background_settings = (visual_style or {}).get("background_settings") or {}
-        requested_workbench = payload.get("workbench") or style_workbench(visual_style, asset_type) or default_workbench_for_asset(settings, asset_type)
+        requested_workbench = payload.get("workbench") or style_workbench(visual_style, asset_type) or default_workbench_for_asset(settings, asset_type, provider)
         width = int(payload.get("width") or settings.get("image_width") or 1024)
         height = int(payload.get("height") or settings.get("image_height") or 576)
         steps = int(settings.get("background_steps") or 28)
@@ -648,7 +660,7 @@ class AppHandler(BaseHTTPRequestHandler):
             style_settings.get("ckpt_name") if asset_type == "sprite" else background_settings.get("ckpt_name")
         ) or settings.get("comfy_checkpoint")
         generation_settings = style_settings if asset_type == "sprite" else background_settings
-        allowed_override_fields = generation_override_fields_for_workbench(settings, requested_workbench)
+        allowed_override_fields = generation_override_fields_for_workbench(settings, requested_workbench, provider)
         generation_overrides = generation_overrides_for_style(
             generation_settings,
             payload if asset_type == "background" else None,
@@ -656,7 +668,7 @@ class AppHandler(BaseHTTPRequestHandler):
         )
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and generation_settings) or generation_overrides)
-        comfy_token = service_manager.begin_comfy_generation(settings, reason=f"manual:{asset_type}")
+        comfy_token = service_manager.begin_comfy_generation(settings, reason=f"manual:{asset_type}", provider=provider)
         try:
             result, workbench_id = self.queue_comfy_image(
                 settings,
@@ -674,12 +686,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 preserve_workbench_settings,
                 generation_overrides,
                 expression_prompts=expression_prompts,
+                provider=provider,
             )
             db.add_api_log(
                 "comfyui",
                 "prompt:image",
                 {
                     "asset_type": asset_type,
+                    "comfy_provider": provider,
                     "width": width,
                     "height": height,
                     "checkpoint": checkpoint,
@@ -711,6 +725,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "remote_ref": result.get("prompt_id", ""),
                     "metadata": {
                         "workbench": workbench_id,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
                         "expression_group": bool(asset_type == "sprite" and style_expressions_enabled(visual_style)),
@@ -736,6 +751,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "prompt:image",
                 {
                     "asset_type": asset_type,
+                    "comfy_provider": provider,
                     "width": width,
                     "height": height,
                     "checkpoint": checkpoint,
@@ -876,7 +892,8 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(story_id)
         background_settings = (visual_style or {}).get("background_settings") or {}
-        workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background")
+        provider = comfy_provider_for_style_slot(settings, visual_style, "background")
+        workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background", provider)
         normalized_prompt = narrative.normalize_background_visual_prompt(source_prompt)
         if not normalized_prompt:
             raise ValueError("Prompt de cenario vazio.")
@@ -903,14 +920,14 @@ class AppHandler(BaseHTTPRequestHandler):
         scheduler = background_settings.get("scheduler") or settings.get("comfy_scheduler")
         checkpoint = background_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
         negative_prompt = background_negative_prompt(visual_style)
-        allowed = generation_override_fields_for_workbench(settings, workbench_id)
+        allowed = generation_override_fields_for_workbench(settings, workbench_id, provider)
         overrides = ensure_generation_seed_override(generation_overrides_for_style(background_settings, allowed_fields=allowed), allowed)
         preserve = not bool((visual_style and background_settings) or overrides)
-        token = service_manager.begin_comfy_generation(settings, reason=f"scenario:{operation}")
+        token = service_manager.begin_comfy_generation(settings, reason=f"scenario:{operation}", provider=provider)
         try:
             result, workbench_id = self.queue_comfy_image(
                 settings, "background", visual_prompt, width, height, checkpoint, steps, cfg,
-                sampler, scheduler, workbench_id, negative_prompt, preserve, overrides,
+                sampler, scheduler, workbench_id, negative_prompt, preserve, overrides, provider=provider,
             )
             asset_id = db.add_asset(
                 story_id,
@@ -924,6 +941,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "scenario_source_prompt": source_prompt,
                         "scenario_enhanced_prompt": enhanced_prompt,
                         "workbench": workbench_id,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         **result,
                     },
@@ -942,7 +960,8 @@ class AppHandler(BaseHTTPRequestHandler):
 
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(character.get("story_id"))
-        workbench_id = payload.get("workbench") or style_workbench(visual_style) or default_workbench_for_asset(settings, "sprite")
+        provider = comfy_provider_for_style_slot(settings, visual_style, "sprite")
+        workbench_id = payload.get("workbench") or style_workbench(visual_style) or default_workbench_for_asset(settings, "sprite", provider)
         prompt_profile = prompt_profile_for_visual_style(settings, visual_style, "sprite", workbench_id)
         expression = payload.get("expression") or "neutral"
         instructions = payload.get("instructions") or ""
@@ -967,6 +986,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "character:image-prompt",
             {
                 "character_id": character_id,
+                "comfy_provider": provider,
                 "workbench": workbench_id,
                 "clothing": character.get("clothing") or "",
                 "source_prompt": source_prompt,
@@ -999,6 +1019,7 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(character.get("story_id"))
         workbench_type = "appearance_reference" if additional_reference else "appearance"
+        provider = comfy_provider_for_style_slot(settings, visual_style, workbench_type)
         workbench_id = payload.get("workbench") or style_workbench(visual_style, workbench_type)
         if not workbench_id:
             return self.send_error_json(400, "Configure o Workflow de Alterar Aparencia no estilo atual.")
@@ -1031,13 +1052,13 @@ class AppHandler(BaseHTTPRequestHandler):
         scheduler = style_settings.get("scheduler") or settings.get("sprite_scheduler") or settings.get("comfy_scheduler")
         checkpoint = style_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
         negative_prompt = (visual_style or {}).get("negative_prompt") or ""
-        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id)
+        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id, provider)
         generation_overrides = generation_overrides_for_style(style_settings, allowed_fields=allowed_override_fields)
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
         additional_reference_path = (ROOT_DIR / additional_reference["file_path"]).resolve() if additional_reference else None
-        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance")
+        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance", provider=provider)
         try:
             result, workbench_id = self.queue_comfy_image(
                 settings,
@@ -1057,6 +1078,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 reference_path,
                 None,
                 additional_reference_path,
+                provider=provider,
             )
             asset_id = db.add_asset(
                 character.get("story_id"),
@@ -1074,6 +1096,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "reference_asset_id": reference_asset_id,
                         "additional_reference_id": additional_reference_id,
                         "workbench": workbench_id,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
                         "prompt_source": prompt_source,
@@ -1102,6 +1125,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "reference_asset_id": reference_asset_id,
                     "additional_reference_id": additional_reference_id,
                     "workbench": workbench_id,
+                    "comfy_provider": provider,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
                     "prompt_source": prompt_source,
@@ -1155,6 +1179,7 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(character.get("story_id"))
         workbench_type = "appearance_reference" if additional_reference else "appearance"
+        provider = comfy_provider_for_style_slot(settings, visual_style, workbench_type)
         workbench_id = payload.get("workbench") or style_workbench(visual_style, workbench_type)
         if not workbench_id:
             return self.send_error_json(400, "Configure o Workflow de Alterar Aparencia no estilo atual.")
@@ -1187,13 +1212,13 @@ class AppHandler(BaseHTTPRequestHandler):
         scheduler = style_settings.get("scheduler") or settings.get("sprite_scheduler") or settings.get("comfy_scheduler")
         checkpoint = style_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
         negative_prompt = (visual_style or {}).get("negative_prompt") or ""
-        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id)
+        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id, provider)
         generation_overrides = generation_overrides_for_style(style_settings, allowed_fields=allowed_override_fields)
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
         additional_reference_path = (ROOT_DIR / additional_reference["file_path"]).resolve() if additional_reference else None
-        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-replace")
+        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-replace", provider=provider)
         try:
             result, resolved_workbench_id = self.queue_comfy_image(
                 settings,
@@ -1213,6 +1238,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 reference_path,
                 None,
                 additional_reference_path,
+                provider=provider,
             )
             asset_id = db.add_asset(
                 character.get("story_id"),
@@ -1234,6 +1260,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "additional_reference_id": additional_reference_id,
                         "target_appearance_id": target_appearance_id,
                         "workbench": resolved_workbench_id,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
                         "prompt_source": prompt_source,
@@ -1255,6 +1282,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "reference_asset_id": reference_asset_id,
                     "additional_reference_id": additional_reference_id,
                     "workbench": resolved_workbench_id,
+                    "comfy_provider": provider,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
                     "prompt_source": prompt_source,
@@ -1357,7 +1385,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise preparation_errors[index]
                 result = self.apply_single_appearance_update(story_id, story, scene, update, prepared.get(index))
                 if result.get("mode") == "create_new" and result.get("prompt_id"):
-                    self.wait_for_comfy_prompt_completion(settings, result["prompt_id"])
+                    self.wait_for_comfy_prompt_completion(settings, result["prompt_id"], provider=result.get("comfy_provider"))
                 results.append(result)
             except Exception as exc:
                 if result and result.get("mode") == "create_new" and result.get("asset_id"):
@@ -1495,6 +1523,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if story_reference and story_reference.get("story_id") != story_id:
             raise ValueError("A referencia de aparencia nao pertence a esta historia.")
         workbench_type = "appearance_reference" if story_reference else "appearance"
+        provider = comfy_provider_for_style_slot(settings, visual_style, workbench_type)
         workbench_id = style_workbench(visual_style, workbench_type)
         if not workbench_id:
             message = "Workflow de Alterar Aparencia Com Referencia" if story_reference else "Workflow de Alterar Aparencia"
@@ -1521,6 +1550,7 @@ class AppHandler(BaseHTTPRequestHandler):
         return {
             "settings": settings,
             "visual_style": visual_style,
+            "comfy_provider": provider,
             "workbench_id": workbench_id,
             "source_prompt": source_prompt,
             "narrative_change_prompt": narrative_change_prompt,
@@ -1546,6 +1576,7 @@ class AppHandler(BaseHTTPRequestHandler):
         settings = prepared["settings"]
         visual_style = prepared["visual_style"]
         workbench_id = prepared["workbench_id"]
+        provider = prepared.get("comfy_provider") or comfy_provider_for_style_slot(settings, visual_style, "appearance_reference" if prepared.get("story_reference") else "appearance")
         source_prompt = prepared["source_prompt"]
         narrative_change_prompt = prepared.get("narrative_change_prompt") or ""
         prompt = prepared["prompt"]
@@ -1562,13 +1593,13 @@ class AppHandler(BaseHTTPRequestHandler):
         scheduler = style_settings.get("scheduler") or settings.get("sprite_scheduler") or settings.get("comfy_scheduler")
         checkpoint = style_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
         negative_prompt = (visual_style or {}).get("negative_prompt") or ""
-        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id)
+        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id, provider)
         generation_overrides = generation_overrides_for_style(style_settings, allowed_fields=allowed_override_fields)
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
         reference_path = (ROOT_DIR / reference_asset["file_path"]).resolve()
         story_reference_path = (ROOT_DIR / story_reference["file_path"]).resolve() if story_reference else None
-        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-update")
+        comfy_token = service_manager.begin_comfy_generation(settings, reason="appearance-update", provider=provider)
         try:
             result, resolved_workbench_id = self.queue_comfy_image(
                 settings,
@@ -1588,6 +1619,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 reference_path,
                 None,
                 story_reference_path,
+                provider=provider,
             )
             asset_id = db.add_asset(
                 story_id,
@@ -1608,6 +1640,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "story_reference_name": (story_reference or {}).get("label") or "",
                         "based_on_appearance_id": base_appearance.get("id"),
                         "workbench": resolved_workbench_id,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                         "source_prompt": source_prompt,
                         "narrative_change_prompt": narrative_change_prompt,
@@ -1648,6 +1681,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "story_reference_name": (story_reference or {}).get("label") or "",
                     "based_on_appearance_id": base_appearance.get("id"),
                     "workbench": resolved_workbench_id,
+                    "comfy_provider": provider,
                     "prompt": prompt,
                     "source_prompt": source_prompt,
                     "narrative_change_prompt": narrative_change_prompt,
@@ -1664,6 +1698,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "appearance_id": (appearance or {}).get("id"),
                 "asset_id": asset_id,
                 "prompt_id": result.get("prompt_id"),
+                "comfy_provider": provider,
                 "activated": bool(update.get("activate_after_generation", True)),
             }
         except Exception as exc:
@@ -1688,10 +1723,11 @@ class AppHandler(BaseHTTPRequestHandler):
             if comfy_token:
                 service_manager.end_comfy_generation(comfy_token, settings=settings, reason="queue-failed")
 
-    def wait_for_comfy_prompt_completion(self, settings, prompt_id, timeout_seconds=1800):
+    def wait_for_comfy_prompt_completion(self, settings, prompt_id, timeout_seconds=1800, provider="local_standard"):
+        provider = comfy_client.normalize_comfy_provider(provider)
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            history = comfy_client.get_history(settings.get("comfy_url"), prompt_id)
+            history = comfy_client.get_history(settings, prompt_id, provider=provider)
             entry = history.get(prompt_id) or {}
             if comfy_history_entry_failed(entry):
                 raise RuntimeError(f"O ComfyUI falhou ao gerar a aparencia ({prompt_id}).")
@@ -1736,6 +1772,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.send_error_json(400, "Gere os prompts de expressao deste personagem antes de regenerar a imagem.")
         settings = db.get_settings()
         visual_style = db.visual_style_for_story(base_asset.get("story_id"))
+        provider = comfy_provider_for_style_slot(settings, visual_style, "expression")
         workbench_id = payload.get("workbench") or style_workbench(visual_style, "expression")
         if not workbench_id:
             return self.send_error_json(400, "Workflow de Alterar Expressoes nao configurado no estilo.")
@@ -1749,7 +1786,7 @@ class AppHandler(BaseHTTPRequestHandler):
         scheduler = style_settings.get("scheduler") or settings.get("sprite_scheduler") or settings.get("comfy_scheduler")
         checkpoint = style_settings.get("ckpt_name") or settings.get("comfy_checkpoint")
         negative_prompt = (visual_style or {}).get("negative_prompt") or ""
-        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id)
+        allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id, provider)
         generation_overrides = generation_overrides_for_style(style_settings, allowed_fields=allowed_override_fields)
         generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
         preserve_workbench_settings = not bool((visual_style and style_settings) or generation_overrides)
@@ -1759,6 +1796,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "appearance_id": base_asset.get("appearance_id") or "",
             "expression": expression,
             "workflow": workbench_id,
+            "comfy_provider": provider,
             "requested_asset_id": base_asset_id,
             "reference_asset_id": base_asset.get("id") or "",
             "reference_expression": normalize_expression(base_asset.get("expression")),
@@ -1778,7 +1816,7 @@ class AppHandler(BaseHTTPRequestHandler):
             ("expression_regeneration_expression", {"expression": expression}),
         ]:
             db.add_api_log("local", operation, value, story_id=base_asset.get("story_id"))
-        comfy_token = service_manager.begin_comfy_generation(settings, reason=f"expression:{expression}")
+        comfy_token = service_manager.begin_comfy_generation(settings, reason=f"expression:{expression}", provider=provider)
         try:
             result, workbench_id = self.queue_comfy_image(
                 settings,
@@ -1796,6 +1834,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 preserve_workbench_settings,
                 generation_overrides,
                 reference_path,
+                provider=provider,
             )
             child_id = db.add_sprite_expression_asset(
                 base_asset,
@@ -1807,6 +1846,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "base_asset_id": base_asset.get("base_asset_id") or base_asset.get("id"),
                     "expression_regeneration": True,
                     "workbench": workbench_id,
+                    "comfy_provider": provider,
                     "visual_style_id": (visual_style or {}).get("id") or "",
                     "source_prompt": prompt,
                     **result,
@@ -1822,6 +1862,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "requested_asset_id": base_asset_id,
                     "expression": expression,
                     "workbench": workbench_id,
+                    "comfy_provider": provider,
                     "prompt": prompt,
                     "reference_asset": base_asset.get("id") or "",
                     "reference_expression": normalize_expression(base_asset.get("expression")),
@@ -1864,7 +1905,8 @@ class AppHandler(BaseHTTPRequestHandler):
         style = payload.get("style") if isinstance(payload.get("style"), dict) else {}
         asset_type = narrative.normalize_prompt_asset_type(payload.get("asset_type") or "appearance")
         workbench_type = "background" if asset_type == "background" else (asset_type if asset_type in {"appearance", "appearance_reference"} else "sprite")
-        workbench_id = payload.get("workbench") or style_workbench(style, workbench_type) or default_workbench_for_asset(settings, workbench_type)
+        provider = comfy_provider_for_style_slot(settings, style, workbench_type)
+        workbench_id = payload.get("workbench") or style_workbench(style, workbench_type) or default_workbench_for_asset(settings, workbench_type, provider)
         prompt_profile = prompt_profile_for_visual_style(settings, style, asset_type, workbench_id)
         appearance = (payload.get("appearance") or "").strip()
         clothing = (payload.get("clothing") or "").strip()
@@ -1985,21 +2027,23 @@ class AppHandler(BaseHTTPRequestHandler):
         input_image_path=None,
         expression_prompts=None,
         reference_image_path=None,
+        provider="local_standard",
     ):
-        workbench_id = requested_workbench or default_workbench_for_asset(settings, asset_type)
+        provider = comfy_client.normalize_comfy_provider(provider)
+        workbench_id = requested_workbench or default_workbench_for_asset(settings, asset_type, provider)
         if workbench_id:
-            if settings.get("comfy_free_memory_between_workbench_runs") is not False:
-                free_result = comfy_client.free_memory(settings.get("comfy_url"))
+            if not comfy_client.is_remote_comfy_provider(provider) and settings.get("comfy_free_memory_between_workbench_runs") is not False:
+                free_result = comfy_client.free_memory(settings, provider=provider)
                 db.add_api_log(
                     "comfyui",
                     "memory:free-before-workbench",
-                    {"workbench": workbench_id, "asset_type": asset_type},
+                    {"provider": provider, "workbench": workbench_id, "asset_type": asset_type},
                     free_result,
                 )
             return (
                 comfy_client.queue_workbench_image(
-                    settings.get("comfy_url"),
-                    comfy_workflows_dir(settings),
+                    settings,
+                    comfy_workflows_dir(settings, provider),
                     workbench_id,
                     prompt,
                     width,
@@ -2016,12 +2060,13 @@ class AppHandler(BaseHTTPRequestHandler):
                     input_image_path,
                     reference_image_path,
                     expression_prompts,
+                    provider=provider,
                 ),
                 workbench_id,
             )
         return (
             comfy_client.queue_simple_image(
-                settings.get("comfy_url"),
+                settings,
                 prompt,
                 width,
                 height,
@@ -2033,6 +2078,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 scheduler,
                 negative_prompt,
                 (generation_overrides or {}).get("seed"),
+                provider=provider,
             ),
             "",
         )
@@ -2111,11 +2157,12 @@ class AppHandler(BaseHTTPRequestHandler):
             settings = db.get_settings()
             visual_style = db.visual_style_for_story(story_id)
             background_settings = (visual_style or {}).get("background_settings") or {}
+            provider = comfy_provider_for_style_slot(settings, visual_style, "background")
             source_prompt = (scene.get("background_prompt") or "").strip()
             visual_prompt = narrative.normalize_background_visual_prompt(source_prompt)
             if not visual_prompt:
                 return {"mode": "error", "error": "Prompt de cenario vazio."}
-            workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background")
+            workbench_id = style_workbench(visual_style, "background") or default_workbench_for_asset(settings, "background", provider)
             prompt_profile = prompt_profile_for_visual_style(settings, visual_style, "background", workbench_id)
             if prompt_profile:
                 service_manager.activate_text_ai_role("scene", settings)
@@ -2137,11 +2184,11 @@ class AppHandler(BaseHTTPRequestHandler):
             cfg = float(background_settings.get("cfg") or settings.get("background_cfg") or 6.5)
             sampler = background_settings.get("sampler_name") or settings.get("comfy_sampler")
             scheduler = background_settings.get("scheduler") or settings.get("comfy_scheduler")
-            allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id)
+            allowed_override_fields = generation_override_fields_for_workbench(settings, workbench_id, provider)
             generation_overrides = generation_overrides_for_style(background_settings, allowed_fields=allowed_override_fields)
             generation_overrides = ensure_generation_seed_override(generation_overrides, allowed_override_fields)
             preserve_workbench_settings = not bool((visual_style and background_settings) or generation_overrides)
-            comfy_token = service_manager.begin_comfy_generation(settings, reason="auto-background")
+            comfy_token = service_manager.begin_comfy_generation(settings, reason="auto-background", provider=provider)
             try:
                 result, workbench_id = self.queue_comfy_image(
                     settings,
@@ -2158,6 +2205,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     negative_prompt,
                     preserve_workbench_settings,
                     generation_overrides,
+                    provider=provider,
                 )
                 db.add_api_log(
                     "comfyui",
@@ -2176,6 +2224,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "scheduler": scheduler,
                         "generation_overrides": generation_overrides,
                         "negative_prompt": negative_prompt,
+                        "comfy_provider": provider,
                         "visual_style_id": (visual_style or {}).get("id") or "",
                     },
                     result,
@@ -2189,7 +2238,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "prompt": visual_prompt,
                         "negative_prompt": negative_prompt,
                         "remote_ref": result.get("prompt_id", ""),
-                        "metadata": {"auto": True, "workbench": workbench_id, "visual_style_id": (visual_style or {}).get("id") or "", "source_prompt": source_prompt, **result},
+                        "metadata": {"auto": True, "workbench": workbench_id, "comfy_provider": provider, "visual_style_id": (visual_style or {}).get("id") or "", "source_prompt": source_prompt, **result},
                     },
                 )
                 service_manager.attach_comfy_generation(comfy_token, asset_id=asset_id, prompt_id=result.get("prompt_id", ""))
@@ -2321,13 +2370,14 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.send_json({"ready": True, "asset": asset})
 
         settings = db.get_settings()
+        provider = comfy_provider_for_asset(settings, asset)
         prompt_id = asset.get("remote_ref")
         if not prompt_id:
             service_manager.end_comfy_generation(asset_id=asset_id, settings=settings, reason="missing-prompt-id")
             return self.send_json({"ready": False, "asset": asset})
 
         try:
-            images, entry = comfy_client.get_history_images(settings.get("comfy_url"), prompt_id)
+            images, entry = comfy_client.get_history_images(settings, prompt_id, provider=provider)
         except Exception as exc:
             if comfy_client.is_timeout_error(exc):
                 return self.send_json({"ready": False, "waiting": True, "asset": asset})
@@ -2357,11 +2407,11 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.send_json({"ready": False, "asset": asset})
 
         try:
-            body, content_type = comfy_client.download_image(settings.get("comfy_url"), image)
+            body, content_type = comfy_client.download_image(settings, image, provider=provider)
             db.add_api_log(
                 "comfyui",
                 "history:view-image",
-                {"prompt_id": prompt_id},
+                {"prompt_id": prompt_id, "comfy_provider": provider},
                 {"image": image, "content_type": content_type, "bytes": len(body)},
                 story_id=asset.get("story_id"),
             )
@@ -2400,13 +2450,13 @@ class AppHandler(BaseHTTPRequestHandler):
                     {"file_path": updated.get("file_path") or ""},
                     story_id=asset.get("story_id"),
                 )
-            if settings.get("comfy_free_memory_between_workbench_runs") is not False and asset.get("metadata", {}).get("workbench"):
+            if not comfy_client.is_remote_comfy_provider(provider) and settings.get("comfy_free_memory_between_workbench_runs") is not False and asset.get("metadata", {}).get("workbench"):
                 try:
-                    free_result = comfy_client.free_memory(settings.get("comfy_url"))
+                    free_result = comfy_client.free_memory(settings, provider=provider)
                     db.add_api_log(
                         "comfyui",
                         "memory:free-after-asset",
-                        {"asset_id": asset_id, "workbench": asset.get("metadata", {}).get("workbench")},
+                        {"asset_id": asset_id, "comfy_provider": provider, "workbench": asset.get("metadata", {}).get("workbench")},
                         free_result,
                         story_id=asset.get("story_id"),
                     )
@@ -2414,7 +2464,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     db.add_api_log(
                         "comfyui",
                         "memory:free-after-asset",
-                        {"asset_id": asset_id, "workbench": asset.get("metadata", {}).get("workbench")},
+                        {"asset_id": asset_id, "comfy_provider": provider, "workbench": asset.get("metadata", {}).get("workbench")},
                         status="error",
                         error=str(exc),
                         story_id=asset.get("story_id"),
@@ -2424,6 +2474,7 @@ class AppHandler(BaseHTTPRequestHandler):
             service_manager.end_comfy_generation(asset_id=asset_id, settings=settings, reason="asset-ready")
 
     def resolve_sprite_expression_group(self, asset, images, entry, settings):
+        provider = comfy_provider_for_asset(settings, asset)
         asset_id = asset.get("id")
         if not images:
             if comfy_history_entry_failed(entry):
@@ -2437,7 +2488,7 @@ class AppHandler(BaseHTTPRequestHandler):
             images[0],
         )
         try:
-            body, content_type = comfy_client.download_image(settings.get("comfy_url"), neutral_image)
+            body, content_type = comfy_client.download_image(settings, neutral_image, provider=provider)
             relative_path = self.asset_relative_path(asset, neutral_image, content_type)
             target = ROOT_DIR / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -2469,11 +2520,12 @@ class AppHandler(BaseHTTPRequestHandler):
                             "expression_group_child": True,
                             "fallback_to_base": False,
                             "workbench": asset.get("metadata", {}).get("workbench") or "",
+                            "comfy_provider": provider,
                             "visual_style_id": asset.get("metadata", {}).get("visual_style_id") or "",
                         },
                     )
                     child_asset = db.get_asset(child_id)
-                    child_body, child_content_type = comfy_client.download_image(settings.get("comfy_url"), expression_image)
+                    child_body, child_content_type = comfy_client.download_image(settings, expression_image, provider=provider)
                     child_relative_path = self.asset_relative_path(child_asset, expression_image, child_content_type)
                     child_target = ROOT_DIR / child_relative_path
                     child_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2495,6 +2547,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "expression_group_child": True,
                             "fallback_to_base": True,
                             "workbench": asset.get("metadata", {}).get("workbench") or "",
+                            "comfy_provider": provider,
                             "visual_style_id": asset.get("metadata", {}).get("visual_style_id") or "",
                             "content_type": content_type,
                         },
@@ -2503,17 +2556,17 @@ class AppHandler(BaseHTTPRequestHandler):
             db.add_api_log(
                 "comfyui",
                 "history:view-expression-group",
-                {"prompt_id": asset.get("remote_ref"), "asset_id": asset_id},
+                {"prompt_id": asset.get("remote_ref"), "asset_id": asset_id, "comfy_provider": provider},
                 {"images": images, "created": created, "base_image": neutral_image},
                 story_id=asset.get("story_id"),
             )
-            if settings.get("comfy_free_memory_between_workbench_runs") is not False and asset.get("metadata", {}).get("workbench"):
+            if not comfy_client.is_remote_comfy_provider(provider) and settings.get("comfy_free_memory_between_workbench_runs") is not False and asset.get("metadata", {}).get("workbench"):
                 try:
-                    free_result = comfy_client.free_memory(settings.get("comfy_url"))
+                    free_result = comfy_client.free_memory(settings, provider=provider)
                     db.add_api_log(
                         "comfyui",
                         "memory:free-after-asset",
-                        {"asset_id": asset_id, "workbench": asset.get("metadata", {}).get("workbench")},
+                        {"asset_id": asset_id, "comfy_provider": provider, "workbench": asset.get("metadata", {}).get("workbench")},
                         free_result,
                         story_id=asset.get("story_id"),
                     )
@@ -2521,7 +2574,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     db.add_api_log(
                         "comfyui",
                         "memory:free-after-asset",
-                        {"asset_id": asset_id, "workbench": asset.get("metadata", {}).get("workbench")},
+                        {"asset_id": asset_id, "comfy_provider": provider, "workbench": asset.get("metadata", {}).get("workbench")},
                         status="error",
                         error=str(exc),
                         story_id=asset.get("story_id"),
@@ -2634,11 +2687,12 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def proxy_comfy_view(self, query):
         settings = db.get_settings()
+        provider = comfy_provider_from_query(settings, query)
         prompt_id = (query.get("prompt_id") or [""])[0]
         if not prompt_id:
             return self.send_error_json(400, "prompt_id ausente.")
 
-        history = comfy_client.get_history(settings.get("comfy_url"), prompt_id)
+        history = comfy_client.get_history(settings, prompt_id, provider=provider)
         entry = history.get(prompt_id) or {}
         outputs = entry.get("outputs") or {}
         image = None
@@ -2650,16 +2704,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if not image:
             return self.send_error_json(404, "Imagem ainda nao esta pronta.")
 
-        params = urllib.parse.urlencode(
-            {
-                "filename": image.get("filename", ""),
-                "type": image.get("type", "output"),
-                "subfolder": image.get("subfolder", ""),
-            }
-        )
-        with urllib.request.urlopen(f"{settings.get('comfy_url').rstrip('/')}/view?{params}", timeout=30) as response:
-            body = response.read()
-            content_type = response.headers.get("content-type") or "image/png"
+        body, content_type = comfy_client.download_image(settings, image, provider=provider)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -2773,15 +2818,16 @@ def run(host="127.0.0.1", port=3000):
     server.serve_forever()
 
 
-def comfy_workflows_dir(settings):
-    configured = settings.get("comfy_workflows_dir")
-    if configured:
-        return Path(configured)
-    comfy_root = settings.get("comfy_root") or ""
-    return Path(comfy_root) / "user" / "default" / "workflows"
+def comfy_provider_from_query(settings, query):
+    value = (query.get("provider") or [""])[0] if isinstance(query, dict) else ""
+    return comfy_client.normalize_comfy_provider(value or comfy_client.comfy_default_provider(settings))
 
 
-def default_workbench_for_asset(settings, asset_type):
+def comfy_workflows_dir(settings, provider="local_standard"):
+    return comfy_client.comfy_workflows_dir_for_provider(settings, provider)
+
+
+def default_workbench_for_asset(settings, asset_type, provider="local_standard"):
     if asset_type == "background":
         return settings.get("comfy_background_workbench") or ""
     if asset_type == "sprite":
@@ -2789,6 +2835,15 @@ def default_workbench_for_asset(settings, asset_type):
     if asset_type in {"sprite_edit", "sprite_variation"}:
         return settings.get("comfy_sprite_edit_workbench") or ""
     return ""
+
+
+def comfy_provider_for_style_slot(settings, visual_style, slot):
+    return comfy_client.comfy_provider_for_style_slot(settings, visual_style, slot)
+
+
+def comfy_provider_for_asset(settings, asset):
+    metadata = (asset or {}).get("metadata") or {}
+    return comfy_client.normalize_comfy_provider(metadata.get("comfy_provider") or "local_standard")
 
 
 def style_workbench(style, asset_type="sprite"):
@@ -3066,11 +3121,11 @@ def normalize_background_negative_prompt(prompt):
     return ", ".join(parts)
 
 
-def generation_override_fields_for_workbench(settings, workbench_id):
+def generation_override_fields_for_workbench(settings, workbench_id, provider="local_standard"):
     if not workbench_id:
         return None
     try:
-        workbenches = comfy_client.list_workbenches(comfy_workflows_dir(settings))
+        workbenches = comfy_client.list_workbenches(comfy_workflows_dir(settings, provider))
     except Exception:
         return None
     workbench = next((item for item in workbenches if item.get("id") == workbench_id), None)

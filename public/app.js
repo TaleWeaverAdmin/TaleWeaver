@@ -6,6 +6,7 @@ const state = {
   ollamaModels: [],
   checkpoints: [],
   workbenches: [],
+  workbenchesByProvider: {},
   visualStyles: [],
   logs: [],
   drawer: "",
@@ -48,6 +49,7 @@ const state = {
   selectedScenarioId: "",
   referenceEditingId: "",
   settingsAdvanced: false,
+  settingsTab: "text-ai",
   editMode: false,
   storySort: "recent",
   playMenuOpen: false,
@@ -62,6 +64,17 @@ let pendingMessageDialogResolve = null;
 const SYSTEM_LANGUAGE_OPTIONS = [
   { value: "pt-BR", label: "Portugu\u00eas (BR)" },
   { value: "en", label: "English" },
+];
+
+const COMFY_PROVIDER_OPTIONS = [
+  { value: "local_standard", label: "Local ComfyUI" },
+  { value: "remote_standard", label: "Remote Standard" },
+  { value: "comfy_cloud", label: "Comfy Cloud" },
+];
+
+const STYLE_COMFY_PROVIDER_OPTIONS = [
+  { value: "", label: "Usar provedor padrao" },
+  ...COMFY_PROVIDER_OPTIONS,
 ];
 
 const UI_COPY = {
@@ -115,7 +128,13 @@ const UI_TRANSLATIONS_EN = {
   "Cenario steps": "Background steps",
   "Cenarios": "Scenarios",
   "Checkpoints detectados": "Detected checkpoints",
+  "Cabecalho customizado": "Custom header",
+  "Comfy Cloud": "Comfy Cloud",
+  "Comfy Cloud API key": "Comfy Cloud API key",
+  "ComfyUI local": "Local ComfyUI",
   "Configuracoes de cenario ficam em Estilos visuais. O checkpoint padrao acima e usado quando o estilo nao define um checkpoint proprio.": "Background settings live in Visual styles. The default checkpoint above is used when the style does not define its own checkpoint.",
+  "Configuracoes do Comfy Cloud": "Comfy Cloud settings",
+  "Configuracoes do Remote Standard": "Remote Standard settings",
   "Clique em continuar para gerar a primeira resposta.": "Click continue to generate the first response.",
   "Cole a chave aqui": "Paste the key here",
   "Comando de geracao de prompt para aparencias": "Prompt-generation command for appearances",
@@ -133,6 +152,7 @@ const UI_TRANSLATIONS_EN = {
   "Configuracoes do estilo": "Style settings",
   "Configuracoes gerais": "General settings",
   "Configuracoes locais": "Local settings",
+  "General settings": "General settings",
   "Configurada - deixe em branco para manter": "Configured - leave blank to keep",
   "Continuar": "Continue",
   "Criacao rapida": "Quick creation",
@@ -187,6 +207,7 @@ const UI_TRANSLATIONS_EN = {
   "Historico": "History",
   "IA de geracao de historia": "Story-generation AI",
   "IA de narrativa": "Narrative AI",
+  "IA de texto": "Text AI",
   "Ideia inicial": "Initial idea",
   "Idioma": "Language",
   "Idioma padrao de geracao": "Default generation language",
@@ -242,9 +263,15 @@ const UI_TRANSLATIONS_EN = {
   "Personagens em cena": "Characters in scene",
   "Pasta de execucao": "Execution folder",
   "Pasta de workbenches": "Workbenches folder",
+  "Pasta de workbenches local": "Local workbenches folder",
+  "Pasta de workflows da nuvem": "Cloud workflows folder",
+  "Pasta de workflows remota": "Remote workflows folder",
   "Pasta do ComfyUI": "ComfyUI folder",
   "Pedir diagnostico detalhado de timings": "Request detailed timing diagnostics",
   "Portugues (BR)": "Portuguese (BR)",
+  "Prefixo da API": "API prefix",
+  "Provedor": "Provider",
+  "Provedor padrao de imagem": "Default image provider",
   "Proxima fala": "Next line",
   "Proximo": "Next",
   "Prompt de background": "Background prompt",
@@ -254,6 +281,8 @@ const UI_TRANSLATIONS_EN = {
   "Recarregar": "Reload",
   "Recentes": "Recent",
   "Referencias": "References",
+  "Remote Standard": "Remote Standard",
+  "Remote base URL": "Remote base URL",
   "Regerar": "Regenerate",
   "Regerar Cenario": "Regenerate Scenario",
   "Regerar aparencia": "Regenerate appearance",
@@ -307,6 +336,7 @@ const UI_TRANSLATIONS_EN = {
   "Sprite largura": "Sprite width",
   "Sprites": "Sprites",
   "Testar ComfyUI": "Test ComfyUI",
+  "Text AI": "Text AI",
   "Tecendo mundos, personagens e historias com IA.": "Weaving worlds, characters, and stories with AI.",
   "Tentativas maximas": "Maximum attempts",
   "Temperatura": "Temperature",
@@ -323,8 +353,19 @@ const UI_TRANSLATIONS_EN = {
   "URL do Ollama": "Ollama URL",
   "Usar como sprite ativo": "Use as active sprite",
   "Usar default do workbench": "Use workbench default",
+  "Usar provedor padrao": "Use default provider",
+  "Bearer token": "Bearer token",
+  "Custom header name": "Custom header name",
+  "Enviar API key em extra_data para nodes de parceiro": "Send API key in extra_data for partner nodes",
+  "Sem autenticacao": "No authentication",
+  "Token/API key": "Token/API key",
+  "Tipo de autenticacao": "Authentication type",
+  "Usar X-API-Key": "Use X-API-Key",
+  "Workflow neste provedor": "Workflow on this provider",
   "Usar parametros llama.cpp nesta API": "Use llama.cpp parameters with this API",
   "Verificar certificado SSL": "Verify SSL certificate",
+  "Verificar certificado SSL do Comfy Cloud": "Verify Comfy Cloud SSL certificate",
+  "Verificar certificado SSL do Remote Standard": "Verify Remote Standard SSL certificate",
   "Vestimenta": "Clothing",
   "Visual": "Visual",
   "Visualizar": "Preview",
@@ -1327,8 +1368,10 @@ async function loadSettings() {
   try {
     const data = await api("/api/comfy/workbenches");
     state.workbenches = data.workbenches || [];
+    state.workbenchesByProvider = data.workbenches_by_provider || {};
   } catch {
     state.workbenches = [];
+    state.workbenchesByProvider = {};
   }
 }
 
@@ -1554,13 +1597,20 @@ function renderSettings() {
             </div>
           </div>
         </section>
+        ${renderSettingsTabs()}
         ${renderTextAiRoleSettings(settings)}
-        <section class="panel">
+        <section class="panel settings-tab-panel ${state.settingsTab === "comfy" ? "active" : ""}" ${state.settingsTab === "comfy" ? "" : "hidden"}>
           <h2>ComfyUI</h2>
           <div class="form-grid">
+            <div class="field">
+              <label for="comfy_default_provider">Provedor padrao de imagem</label>
+              <select id="comfy_default_provider" name="comfy_default_provider">
+                ${renderComfyProviderOptions(settings.comfy_default_provider || "local_standard")}
+              </select>
+            </div>
             ${valueField("comfy_url", "URL do ComfyUI", settings.comfy_url || "http://127.0.0.1:8188")}
             ${valueField("comfy_root", "Pasta do ComfyUI", settings.comfy_root || "N:\\SillyTavern\\ComfyUI")}
-            ${valueField("comfy_workflows_dir", "Pasta de workbenches", settings.comfy_workflows_dir || "N:\\SillyTavern\\ComfyUI\\user\\default\\workflows")}
+            ${valueField("comfy_workflows_dir", "Pasta de workbenches local", settings.comfy_workflows_dir || "N:\\SillyTavern\\ComfyUI\\user\\default\\workflows")}
             <div class="field">
               <label for="comfy_checkpoint">Checkpoint padrão</label>
               <select id="comfy_checkpoint" name="comfy_checkpoint">
@@ -1577,6 +1627,39 @@ function renderSettings() {
           <div class="notice">
             Workbenches detectados: ${renderWorkbenchNotice()}
           </div>
+          <div class="script-service">
+            <h3>Configuracoes do Remote Standard</h3>
+            <div class="form-grid">
+              ${valueField("comfy_remote_url", "Remote base URL", settings.comfy_remote_url || "")}
+              ${valueField("comfy_remote_api_prefix", "Prefixo da API", settings.comfy_remote_api_prefix || "")}
+              <div class="field">
+                <label for="comfy_remote_auth_type">Tipo de autenticacao</label>
+                <select id="comfy_remote_auth_type" name="comfy_remote_auth_type">
+                  ${[
+                    ["none", "Sem autenticacao"],
+                    ["bearer", "Bearer token"],
+                    ["x_api_key", "Usar X-API-Key"],
+                    ["custom_header", "Cabecalho customizado"],
+                  ].map(([value, label]) => `<option value="${escapeAttr(value)}" ${(settings.comfy_remote_auth_type || "none") === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+                </select>
+              </div>
+              ${valueField("comfy_remote_auth_header_name", "Custom header name", settings.comfy_remote_auth_header_name || "")}
+              ${secretField("comfy_remote_auth_token", "Token/API key", settings.comfy_remote_auth_token)}
+              ${checkboxField("comfy_remote_verify_ssl", "Verificar certificado SSL do Remote Standard", settings.comfy_remote_verify_ssl !== false)}
+              ${valueField("comfy_remote_workflows_dir", "Pasta de workflows remota", settings.comfy_remote_workflows_dir || "")}
+            </div>
+          </div>
+          <div class="script-service">
+            <h3>Configuracoes do Comfy Cloud</h3>
+            <div class="form-grid">
+              ${secretField("comfy_cloud_auth_token", "Comfy Cloud API key", settings.comfy_cloud_auth_token)}
+              ${valueField("comfy_cloud_url", "Base URL", settings.comfy_cloud_url || "https://cloud.comfy.org")}
+              ${valueField("comfy_cloud_api_prefix", "Prefixo da API", settings.comfy_cloud_api_prefix || "/api")}
+              ${checkboxField("comfy_cloud_verify_ssl", "Verificar certificado SSL do Comfy Cloud", settings.comfy_cloud_verify_ssl !== false)}
+              ${valueField("comfy_cloud_workflows_dir", "Pasta de workflows da nuvem", settings.comfy_cloud_workflows_dir || "")}
+              ${checkboxField("comfy_cloud_extra_data_api_key", "Enviar API key em extra_data para nodes de parceiro", settings.comfy_cloud_extra_data_api_key === true)}
+            </div>
+          </div>
         </section>
         ${renderScriptSettings(settings)}
         <div class="mini-actions">
@@ -1589,9 +1672,31 @@ function renderSettings() {
   `;
 }
 
+function renderSettingsTabs() {
+  const tabs = [
+    ["text-ai", "IA de texto"],
+    ["comfy", "ComfyUI"],
+    ["scripts", "Scripts"],
+  ];
+  return `
+    <div class="settings-tabs style-tabs full" role="tablist" aria-label="Configuracoes">
+      ${tabs.map(([id, label]) => `
+        <button
+          type="button"
+          class="${state.settingsTab === id ? "active" : ""}"
+          data-action="settings-tab"
+          data-tab="${escapeAttr(id)}"
+          role="tab"
+          aria-selected="${state.settingsTab === id ? "true" : "false"}"
+        >${escapeHtml(label)}</button>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderScriptSettings(settings) {
   return `
-    <section class="panel">
+    <section class="panel settings-tab-panel ${state.settingsTab === "scripts" ? "active" : ""}" ${state.settingsTab === "scripts" ? "" : "hidden"}>
       <h2>Scripts</h2>
       <div class="script-service">
         <h3>IA de geracao de historia</h3>
@@ -1627,14 +1732,16 @@ function renderScriptSettings(settings) {
 
 function renderTextAiRoleSettings(settings) {
   return `
-    <section class="panel">
-      <h2>IA de narrativa</h2>
-      ${renderTextAiRolePanel(settings, "scene_ai")}
-    </section>
-    <section class="panel">
-      <h2>IA de geracao de historia</h2>
-      ${renderTextAiRolePanel(settings, "story_ai")}
-    </section>
+    <div class="settings-tab-panel ${state.settingsTab === "text-ai" ? "active" : ""}" ${state.settingsTab === "text-ai" ? "" : "hidden"}>
+      <section class="panel">
+        <h2>IA de narrativa</h2>
+        ${renderTextAiRolePanel(settings, "scene_ai")}
+      </section>
+      <section class="panel">
+        <h2>IA de geracao de historia</h2>
+        ${renderTextAiRolePanel(settings, "story_ai")}
+      </section>
+    </div>
   `;
 }
 
@@ -1761,14 +1868,16 @@ function renderStyleTabs() {
 
 function renderStyleSpriteTab(draft) {
   const active = state.styleTab === "sprites";
+  const spriteProvider = styleSlotProvider(draft, "sprite_comfy_provider");
   return `
     <section class="style-tab-panel full ${active ? "active" : ""}" ${active ? "" : "hidden"} role="tabpanel">
       <div class="form-grid compact-grid">
         <div class="style-workflow-row full">
+          ${renderStyleProviderSelect("style_sprite_comfy_provider", "sprite_comfy_provider", draft.sprite_comfy_provider || "")}
           <div class="field">
-            <label for="style_sprite_workbench">ComfyUI Workflow</label>
+            <label for="style_sprite_workbench">Workflow neste provedor</label>
             <select id="style_sprite_workbench" name="sprite_workbench">
-              ${renderWorkbenchOptions(draft.sprite_workbench || "")}
+              ${renderWorkbenchOptions(draft.sprite_workbench || "", spriteProvider)}
             </select>
           </div>
           <label class="check-row inline-check">
@@ -1795,13 +1904,15 @@ function renderStyleSpriteTab(draft) {
 
 function renderStyleBackgroundTab(draft) {
   const active = state.styleTab === "backgrounds";
+  const backgroundProvider = styleSlotProvider(draft, "background_comfy_provider");
   return `
     <section class="style-tab-panel full ${active ? "active" : ""}" ${active ? "" : "hidden"} role="tabpanel">
       <div class="form-grid compact-grid">
+        ${renderStyleProviderSelect("style_background_comfy_provider", "background_comfy_provider", draft.background_comfy_provider || "")}
         <div class="field">
           <label for="style_background_workbench">ComfyUI Workflow de cenario</label>
           <select id="style_background_workbench" name="background_workbench">
-            ${renderWorkbenchOptions(draft.background_workbench || "")}
+            ${renderWorkbenchOptions(draft.background_workbench || "", backgroundProvider)}
           </select>
         </div>
         ${styleTextarea("background_prompt_prefix", "Prefixo do prompt de cenario", draft.background_prompt_prefix || "")}
@@ -1822,21 +1933,25 @@ function renderStyleBackgroundTab(draft) {
 function renderStyleAppearancesTab() {
   const active = state.styleTab === "appearances";
   const draft = currentStyleDraft();
+  const appearanceProvider = styleSlotProvider(draft, "appearance_comfy_provider");
+  const referenceProvider = styleSlotProvider(draft, "appearance_reference_comfy_provider");
   return `
     <section class="style-tab-panel full ${active ? "active" : ""}" ${active ? "" : "hidden"} role="tabpanel">
       <div class="form-grid compact-grid">
+        ${renderStyleProviderSelect("style_appearance_comfy_provider", "appearance_comfy_provider", draft.appearance_comfy_provider || "")}
         <div class="field full">
           <label for="style_appearance_workbench">Workflow de Alterar Aparência</label>
           <select id="style_appearance_workbench" name="appearance_workbench">
-            ${renderWorkbenchOptions(draft.appearance_workbench || "")}
+            ${renderWorkbenchOptions(draft.appearance_workbench || "", appearanceProvider)}
           </select>
         </div>
         ${renderStylePromptCommandToggle("appearance")}
         ${stylePromptCommandsAreVisible("appearance") ? renderStylePromptCommandFields(draft, "appearance") : ""}
+        ${renderStyleProviderSelect("style_appearance_reference_comfy_provider", "appearance_reference_comfy_provider", draft.appearance_reference_comfy_provider || "")}
         <div class="field full">
           <label for="style_appearance_reference_workbench">Workflow de Alterar Aparência Com Referência</label>
           <select id="style_appearance_reference_workbench" name="appearance_reference_workbench">
-            ${renderWorkbenchOptions(draft.appearance_reference_workbench || "")}
+            ${renderWorkbenchOptions(draft.appearance_reference_workbench || "", referenceProvider)}
           </select>
         </div>
         ${renderStylePromptCommandToggle("appearance_reference")}
@@ -1860,9 +1975,13 @@ function emptyVisualStyleDraft() {
     prompt_suffix: "",
     negative_prompt: "",
     sprite_workbench: "",
+    sprite_comfy_provider: "",
     background_workbench: "",
+    background_comfy_provider: "",
     appearance_workbench: "",
+    appearance_comfy_provider: "",
     appearance_reference_workbench: "",
+    appearance_reference_comfy_provider: "",
     background_prompt_prefix: "",
     background_prompt_suffix: "",
     background_negative_prompt: "",
@@ -1876,6 +1995,7 @@ function emptyVisualStyleDraft() {
     appearance_reference_prompt_example: "",
     expressions_enabled: false,
     expression_workbench: "",
+    expression_comfy_provider: "",
     cover_url: "",
     advanced_settings: {},
     background_settings: {},
@@ -1952,6 +2072,17 @@ function styleTextarea(name, label, value) {
   `;
 }
 
+function renderStyleProviderSelect(id, name, value) {
+  return `
+    <div class="field">
+      <label for="${escapeAttr(id)}">Provedor</label>
+      <select id="${escapeAttr(id)}" name="${escapeAttr(name)}" class="style-comfy-provider-select">
+        ${renderComfyProviderOptions(value || "", true)}
+      </select>
+    </div>
+  `;
+}
+
 function renderStylePromptCommandToggle(assetType) {
   const normalized = normalizeStylePromptAssetType(assetType);
   const id = `style_prompt_commands_toggle_${normalized}`;
@@ -2002,12 +2133,14 @@ function renderStylePromptCommandFields(draft, assetType) {
 }
 
 function renderExpressionWorkflowSetting(draft) {
+  const expressionProvider = styleSlotProvider(draft, "expression_comfy_provider");
   return `
     <section class="expression-prompt-panel full">
+      ${renderStyleProviderSelect("style_expression_comfy_provider", "expression_comfy_provider", draft.expression_comfy_provider || "")}
       <div class="field full">
         <label for="style_expression_workbench">Workflow de Alterar Express&otilde;es</label>
         <select id="style_expression_workbench" name="expression_workbench">
-          ${renderWorkbenchOptions(draft.expression_workbench || "")}
+          ${renderWorkbenchOptions(draft.expression_workbench || "", expressionProvider)}
         </select>
       </div>
     </section>
@@ -2054,7 +2187,7 @@ function normalizeStylePromptAssetType(assetType) {
 
 function renderSpriteAdvancedFields(draft) {
   const advanced = draft.advanced_settings || {};
-  const spriteFields = advancedFieldNamesForWorkbench(draft.sprite_workbench || "");
+  const spriteFields = advancedFieldNamesForWorkbench(draft.sprite_workbench || "", styleSlotProvider(draft, "sprite_comfy_provider"));
   return spriteFields.length
     ? spriteFields.map(field => renderAdvancedStyleField(field, advanced[field] ?? "", defaultAdvancedStyleValue(field))).join("")
     : `<div class="notice full">Nenhum campo avancado detectado para este workflow.</div>`;
@@ -2062,7 +2195,7 @@ function renderSpriteAdvancedFields(draft) {
 
 function renderBackgroundAdvancedFields(draft) {
   const background = draft.background_settings || {};
-  const fields = advancedBackgroundFieldNames();
+  const fields = advancedBackgroundFieldNames(draft.background_workbench || "", styleSlotProvider(draft, "background_comfy_provider"));
   return fields.map(field => renderAdvancedBackgroundField(field, background[field] ?? "", defaultAdvancedBackgroundValue(field))).join("");
 }
 
@@ -2098,18 +2231,18 @@ function renderAdvancedStyleField(field, value, defaultValue = "") {
   `;
 }
 
-function advancedFieldNamesForWorkbench(workbenchId) {
+function advancedFieldNamesForWorkbench(workbenchId, provider = defaultComfyProvider()) {
   const allowed = ["width", "height", "seed", "steps", "cfg", "sampler_name", "scheduler", "ckpt_name"];
   if (!workbenchId) return allowed;
-  const workbench = state.workbenches.find(item => item.id === workbenchId);
+  const workbench = workbenchesForProvider(provider).find(item => item.id === workbenchId);
   const inputs = new Set(workbench?.inputs || []);
   return allowed.filter(field => field === "seed" ? inputs.has("seed") || inputs.has("noise_seed") : inputs.has(field));
 }
 
-function advancedBackgroundFieldNames(workbenchId = currentStyleDraft()?.background_workbench || "") {
+function advancedBackgroundFieldNames(workbenchId = currentStyleDraft()?.background_workbench || "", provider = styleSlotProvider(currentStyleDraft(), "background_comfy_provider")) {
   const allowed = ["width", "height", "seed", "steps", "cfg", "sampler_name", "scheduler", "ckpt_name"];
   if (!workbenchId) return allowed;
-  const workbench = state.workbenches.find(item => item.id === workbenchId);
+  const workbench = workbenchesForProvider(provider).find(item => item.id === workbenchId);
   const inputs = new Set(workbench?.inputs || []);
   return allowed.filter(field => field === "seed" ? inputs.has("seed") || inputs.has("noise_seed") : inputs.has(field));
 }
@@ -2455,9 +2588,42 @@ function llamaPresetDescription(presetId) {
   return preset.description || "";
 }
 
-function renderWorkbenchOptions(currentWorkbench) {
+function normalizeComfyProvider(provider) {
+  const value = String(provider || "").trim();
+  return COMFY_PROVIDER_OPTIONS.some(option => option.value === value) ? value : "local_standard";
+}
+
+function defaultComfyProvider() {
+  return normalizeComfyProvider(state.settings?.comfy_default_provider || "local_standard");
+}
+
+function styleSlotProvider(draft, field) {
+  return normalizeComfyProvider(draft?.[field] || defaultComfyProvider());
+}
+
+function providerLabel(provider) {
+  const normalized = normalizeComfyProvider(provider);
+  return COMFY_PROVIDER_OPTIONS.find(option => option.value === normalized)?.label || "Local ComfyUI";
+}
+
+function renderComfyProviderOptions(currentProvider, includeDefault = false) {
+  const options = includeDefault ? STYLE_COMFY_PROVIDER_OPTIONS : COMFY_PROVIDER_OPTIONS;
+  return options.map(option => (
+    `<option value="${escapeAttr(option.value)}" ${String(currentProvider || "") === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+  )).join("");
+}
+
+function workbenchesForProvider(provider) {
+  const normalized = normalizeComfyProvider(provider);
+  if (state.workbenchesByProvider && Array.isArray(state.workbenchesByProvider[normalized])) {
+    return state.workbenchesByProvider[normalized];
+  }
+  return normalized === defaultComfyProvider() ? state.workbenches : [];
+}
+
+function renderWorkbenchOptions(currentWorkbench, provider = defaultComfyProvider()) {
   const options = [`<option value="" ${!currentWorkbench ? "selected" : ""}>Workflow simples interno</option>`];
-  const workbenches = [...state.workbenches];
+  const workbenches = [...workbenchesForProvider(provider)];
   if (currentWorkbench && !workbenches.some(item => item.id === currentWorkbench)) {
     workbenches.unshift({
       id: currentWorkbench,
@@ -2470,7 +2636,7 @@ function renderWorkbenchOptions(currentWorkbench) {
     const selected = workbench.id === currentWorkbench ? "selected" : "";
     const format = workbench.format || "unknown";
     const suffix = workbench.executable ? "API" : format.toUpperCase();
-    return `<option value="${escapeAttr(workbench.id)}" ${selected}>${escapeHtml(workbench.name)} (${escapeHtml(suffix)})</option>`;
+    return `<option value="${escapeAttr(workbench.id)}" ${selected}>${escapeHtml(workbench.name)} (${escapeHtml(providerLabel(provider))}, ${escapeHtml(suffix)})</option>`;
   })).join("");
 }
 
@@ -5280,6 +5446,19 @@ function bindEvents() {
       render();
     });
   }
+  const styleAppearanceReferenceWorkbench = document.getElementById("style_appearance_reference_workbench");
+  if (styleAppearanceReferenceWorkbench) {
+    styleAppearanceReferenceWorkbench.addEventListener("change", () => {
+      state.styleDraft = collectStyleDraft(styleForm);
+      render();
+    });
+  }
+  document.querySelectorAll(".style-comfy-provider-select").forEach(select => {
+    select.addEventListener("change", () => {
+      state.styleDraft = collectStyleDraft(styleForm);
+      render();
+    });
+  });
   const styleExpressionsEnabled = document.getElementById("style_expressions_enabled");
   if (styleExpressionsEnabled) {
     styleExpressionsEnabled.addEventListener("change", () => {
@@ -5581,6 +5760,12 @@ async function handleAction(event) {
     state.styleTab = event.currentTarget.dataset.tab || "sprites";
     render();
   }
+  if (action === "settings-tab") {
+    const settingsForm = document.getElementById("settings-form");
+    state.settings = { ...(state.settings || {}), ...collectSettingsDraft(settingsForm) };
+    state.settingsTab = event.currentTarget.dataset.tab || "text-ai";
+    render();
+  }
   if (action === "delete-style") deleteVisualStyle(event.currentTarget.dataset.id);
   if (action === "test-style-prompt") testStylePrompt(event.currentTarget.dataset.assetType || "appearance");
   if (action === "logs") {
@@ -5876,6 +6061,9 @@ function collectSettingsPayload(formElement) {
     "script_scene_ai_show_window",
     "script_comfy_start_with_app",
     "script_comfy_show_window",
+    "comfy_remote_verify_ssl",
+    "comfy_cloud_verify_ssl",
+    "comfy_cloud_extra_data_api_key",
     ...roleLlamaBooleanFields("story_ai"),
     ...roleLlamaBooleanFields("scene_ai"),
   ]);
@@ -5904,6 +6092,9 @@ function collectSettingsPayload(formElement) {
   if (form.has("script_scene_ai_show_window")) payload.script_scene_ai_show_window = payload.script_scene_ai_show_window === true;
   if (form.has("script_comfy_start_with_app")) payload.script_comfy_start_with_app = payload.script_comfy_start_with_app === true;
   if (form.has("script_comfy_show_window")) payload.script_comfy_show_window = payload.script_comfy_show_window === true;
+  if (form.has("comfy_remote_verify_ssl")) payload.comfy_remote_verify_ssl = payload.comfy_remote_verify_ssl === true;
+  if (form.has("comfy_cloud_verify_ssl")) payload.comfy_cloud_verify_ssl = payload.comfy_cloud_verify_ssl === true;
+  if (form.has("comfy_cloud_extra_data_api_key")) payload.comfy_cloud_extra_data_api_key = payload.comfy_cloud_extra_data_api_key === true;
   payload.ollama_custom_presets = state.settings?.ollama_custom_presets || {};
   payload.llama_custom_presets = state.settings?.llama_custom_presets || {};
   return payload;
@@ -5921,7 +6112,7 @@ function roleLlamaBooleanFields(prefix) {
 
 function collectSettingsDraft(formElement) {
   const payload = collectSettingsPayload(formElement);
-  ["openai_api_key", "openai_compatible_api_key", "story_ai_openai_compatible_api_key", "scene_ai_openai_compatible_api_key"].forEach(key => {
+  ["openai_api_key", "openai_compatible_api_key", "story_ai_openai_compatible_api_key", "scene_ai_openai_compatible_api_key", "comfy_remote_auth_token", "comfy_cloud_auth_token"].forEach(key => {
     if (payload[key] === "") delete payload[key];
   });
   return payload;
@@ -6206,8 +6397,10 @@ function collectStyleDraft(form) {
   const { expression_prompts: _legacyExpressionPrompts, expression_prompts_visible: _legacyExpressionPromptsVisible, ...styleBase } = current;
   const selectedSpriteWorkbench = styleFormValue(data, "sprite_workbench", current.sprite_workbench);
   const selectedBackgroundWorkbench = styleFormValue(data, "background_workbench", current.background_workbench);
-  const spriteAdvancedFields = new Set(advancedFieldNamesForWorkbench(selectedSpriteWorkbench));
-  const backgroundAdvancedFields = new Set(advancedBackgroundFieldNames(selectedBackgroundWorkbench));
+  const selectedSpriteProvider = styleFormValue(data, "sprite_comfy_provider", current.sprite_comfy_provider);
+  const selectedBackgroundProvider = styleFormValue(data, "background_comfy_provider", current.background_comfy_provider);
+  const spriteAdvancedFields = new Set(advancedFieldNamesForWorkbench(selectedSpriteWorkbench, styleSlotProvider({ ...current, sprite_comfy_provider: selectedSpriteProvider }, "sprite_comfy_provider")));
+  const backgroundAdvancedFields = new Set(advancedBackgroundFieldNames(selectedBackgroundWorkbench, styleSlotProvider({ ...current, background_comfy_provider: selectedBackgroundProvider }, "background_comfy_provider")));
   const advanced = filterStyleSettingsForFields(current.advanced_settings || {}, spriteAdvancedFields);
   const backgroundSettings = filterStyleSettingsForFields(current.background_settings || {}, backgroundAdvancedFields);
   for (const [key, value] of data.entries()) {
@@ -6240,9 +6433,13 @@ function collectStyleDraft(form) {
     prompt_suffix: styleFormValue(data, "prompt_suffix", current.prompt_suffix),
     negative_prompt: styleFormValue(data, "negative_prompt", current.negative_prompt),
     sprite_workbench: styleFormValue(data, "sprite_workbench", current.sprite_workbench),
+    sprite_comfy_provider: styleFormValue(data, "sprite_comfy_provider", current.sprite_comfy_provider),
     background_workbench: styleFormValue(data, "background_workbench", current.background_workbench),
+    background_comfy_provider: styleFormValue(data, "background_comfy_provider", current.background_comfy_provider),
     appearance_workbench: styleFormValue(data, "appearance_workbench", current.appearance_workbench),
+    appearance_comfy_provider: styleFormValue(data, "appearance_comfy_provider", current.appearance_comfy_provider),
     appearance_reference_workbench: styleFormValue(data, "appearance_reference_workbench", current.appearance_reference_workbench),
+    appearance_reference_comfy_provider: styleFormValue(data, "appearance_reference_comfy_provider", current.appearance_reference_comfy_provider),
     background_prompt_prefix: styleFormValue(data, "background_prompt_prefix", current.background_prompt_prefix),
     background_prompt_suffix: styleFormValue(data, "background_prompt_suffix", current.background_prompt_suffix),
     background_negative_prompt: styleFormValue(data, "background_negative_prompt", current.background_negative_prompt),
@@ -6256,6 +6453,7 @@ function collectStyleDraft(form) {
     appearance_reference_prompt_example: styleFormValue(data, "appearance_reference_prompt_example", current.appearance_reference_prompt_example),
     expressions_enabled: styleFormBool(data, "expressions_enabled", current.expressions_enabled === true),
     expression_workbench: styleFormValue(data, "expression_workbench", current.expression_workbench),
+    expression_comfy_provider: styleFormValue(data, "expression_comfy_provider", current.expression_comfy_provider),
     advanced_settings: advanced,
     background_settings: backgroundSettings,
   };
@@ -6291,9 +6489,11 @@ async function deleteVisualStyle(styleId) {
 async function testComfy() {
   setBusy(true, "Testando ComfyUI...");
   try {
-    const status = await api("/api/comfy/status");
+    const form = document.getElementById("settings-form");
+    const provider = form ? (new FormData(form).get("comfy_default_provider") || state.settings?.comfy_default_provider || "local_standard") : (state.settings?.comfy_default_provider || "local_standard");
+    const status = await api(`/api/comfy/status?provider=${encodeURIComponent(provider)}`);
     const gpu = status.devices?.[0]?.name || "dispositivo não informado";
-    alert(`ComfyUI online. GPU: ${gpu}`);
+    alert(`ComfyUI online (${providerLabel(status.provider || provider)}). GPU: ${gpu}`);
   } catch (error) {
     alert(`ComfyUI não respondeu: ${error.message}`);
   } finally {

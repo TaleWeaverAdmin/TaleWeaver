@@ -409,8 +409,10 @@ def stop_service(service, settings=None, reason="manual", allow_external=False):
     return result
 
 
-def begin_comfy_generation(settings=None, reason="comfy-generation"):
+def begin_comfy_generation(settings=None, reason="comfy-generation", provider="local_standard"):
     settings = settings or db.get_settings()
+    if str(provider or "local_standard").strip().lower() in {"remote_standard", "comfy_cloud"}:
+        return ""
     token = uuid.uuid4().hex
     with _lock:
         cancel_pending_text_ai_resume_locked()

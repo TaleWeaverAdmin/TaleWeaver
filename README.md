@@ -80,7 +80,7 @@ For narrative generation, it can work with:
 
 For image generation, it integrates with:
 
-* ComfyUI
+* ComfyUI (local and could)
 * custom ComfyUI workflows
 * workflows for sprites, scenarios, expressions, outfits, references, and image editing
 
